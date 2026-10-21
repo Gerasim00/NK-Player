@@ -33,6 +33,8 @@ const state = {
   localTracks: null,
   playlists: [],
   playlistTracks: new Map(),  // "owner_id" -> tracks
+  localPlaylists: [],         // свои плейлисты (playlists.json в профиле)
+  localPlaylistTracks: new Map(), // id -> tracks
   search: null,               // { query, tracks, more }
   view: { type: 'my' },
   displayed: [],              // треки текущего экрана после фильтра
@@ -41,6 +43,7 @@ const state = {
   queue: [],
   order: [],                  // порядок воспроизведения (индексы queue)
   pos: -1,                    // позиция в order
+  orderOf: null,              // трек -> позиция в order (для экрана очереди)
   current: null,
   shuffle: false,
   repeat: 'off',              // off | all | one
@@ -54,8 +57,8 @@ let authPollInterval = null;
 
 // ---------------------------------------------------------------- IPC
 
-async function vkCall(channel, arg) {
-  const res = await ipcRenderer.invoke(channel, arg);
+async function vkCall(channel, ...args) {
+  const res = await ipcRenderer.invoke(channel, ...args);
   if (!res || !res.success) throw new Error((res && res.error) || 'Неизвестная ошибка');
   return res.data;
 }
@@ -118,11 +121,132 @@ ipcRenderer.on('win:state', (_, { maximized }) => {
 
 // ---------------------------------------------------------------- Авторизация
 
+// ---------------------------------------------------------------- Соглашение
+
+// Версия текста соглашения: если она изменится, плашку покажем заново.
+const TERMS_VERSION = '1';
+const TERMS_KEY = 'nk.termsVersion';
+
+const btnOauth = $('btn-oauth');
+const termsAccept = $('terms-accept');
+const termsText = $('terms-text');
+const termsCheck = document.querySelector('.terms-check');
+const termsToggle = $('terms-toggle');
+
+function termsAccepted() {
+  try { return localStorage.getItem(TERMS_KEY) === TERMS_VERSION; } catch (e) { return false; }
+}
+
+function setTermsExpanded(expanded) {
+  termsText.classList.toggle('hidden', !expanded);
+  termsCheck.classList.toggle('hidden', !expanded);
+  termsToggle.textContent = expanded ? 'Свернуть' : 'Показать';
+}
+
+function setTermsAccepted(on) {
+  termsAccept.checked = on;
+  btnOauth.disabled = !on;
+  btnOauth.title = on ? 'Открыть страницу входа ВКонтакте' : 'Сначала примите пользовательское соглашение';
+  try {
+    if (on) localStorage.setItem(TERMS_KEY, TERMS_VERSION);
+    else localStorage.removeItem(TERMS_KEY);
+  } catch (e) {}
+}
+
+// При запуске соглашение уже может быть принято — тогда сразу разблокируем вход
+// и сворачиваем текст, чтобы карточка входа не занимала весь экран.
+function applyTermsState() {
+  const accepted = termsAccepted();
+  setTermsAccepted(accepted);
+  setTermsExpanded(!accepted);
+}
+
+termsAccept.addEventListener('change', () => setTermsAccepted(termsAccept.checked));
+
+termsToggle.addEventListener('click', () => {
+  setTermsExpanded(termsText.classList.contains('hidden'));
+});
+
+// ---------------------------------------------------------------- Версия и обновления
+
+let updateChecked = false;
+
+async function showVersion() {
+  try {
+    const res = await ipcRenderer.invoke('app:version');
+    const ver = res && res.success ? res.data : '';
+    $('app-version').textContent = ver ? 'v' + ver : '';
+  } catch (e) {}
+}
+
+// Тег релиза у нас называется NK-Player-1.5.0 — в интерфейсе оставляем только номер
+function versionLabel(tag) {
+  const m = String(tag || '').match(/\d+(?:\.\d+)*/);
+  return m ? m[0] : String(tag || '').replace(/^v/i, '');
+}
+
+function showUpdateBanner(info) {
+  if (!info || !info.updateAvailable) return;
+  const banner = $('update-banner');
+  $('ub-text').textContent = `У вас v${info.current}, на GitHub опубликована ${versionLabel(info.latest)}. Скачайте новую сборку, чтобы получить свежие исправления.`;
+  banner.classList.remove('hidden');
+  banner.dataset.url = info.url || '';
+}
+
+async function checkUpdates(manual) {
+  const btn = $('btn-check-update');
+  btn.classList.add('busy');
+  if (manual) btn.textContent = 'Проверяем…';
+
+  try {
+    const res = await ipcRenderer.invoke('update:check', { force: !!manual });
+    if (!res || !res.success) throw new Error((res && res.error) || 'Не удалось проверить обновления');
+    const info = res.data;
+    updateChecked = true;
+
+    if (info.error) {
+      if (manual) toast('Не удалось проверить: ' + info.error);
+      return;
+    }
+    if (info.updateAvailable) {
+      showUpdateBanner(info);
+      if (manual) toast(`Доступна версия ${versionLabel(info.latest)}`);
+      return;
+    }
+    if (manual) toast(`У вас последняя версия (v${info.current})`);
+  } catch (e) {
+    if (manual) toast('Не удалось проверить обновления: ' + e.message);
+  } finally {
+    btn.classList.remove('busy');
+    btn.textContent = 'Проверить';
+  }
+}
+
+$('btn-check-update').addEventListener('click', () => checkUpdates(true));
+
+$('ub-later').addEventListener('click', () => $('update-banner').classList.add('hidden'));
+
+$('ub-open').addEventListener('click', async () => {
+  const url = $('update-banner').dataset.url;
+  if (!url) return;
+  await ipcRenderer.invoke('app:openExternal', url);
+  $('update-banner').classList.add('hidden');
+});
+
+// ---------------------------------------------------------------- Запуск
+
 window.addEventListener('DOMContentLoaded', async () => {
   restoreSettings();
+  applyTermsState();
+  showVersion();
+
   const session = await ipcRenderer.invoke('auth:check');
   if (session.loggedIn) showApp();
   else loginView.classList.remove('hidden');
+
+  // Проверку обновлений запускаем после отрисовки: ответ GitHub не должен
+  // задерживать показ окна, а без сети приложение обязано работать как обычно.
+  setTimeout(() => { if (!updateChecked) checkUpdates(false); }, 2000);
 });
 
 function stopAuthPoll() {
@@ -132,7 +256,12 @@ function stopAuthPoll() {
   }
 }
 
-$('btn-oauth').addEventListener('click', async () => {
+btnOauth.addEventListener('click', async () => {
+  if (!termsAccepted()) {
+    statusEl.textContent = 'Чтобы продолжить, примите пользовательское соглашение.';
+    setTermsExpanded(true);
+    return;
+  }
   statusEl.textContent = '';
   await ipcRenderer.invoke('auth:start');
   qrCancelBar.classList.remove('hidden');
@@ -161,8 +290,10 @@ $('btn-logout').addEventListener('click', async () => {
   Object.assign(state, {
     profile: null,
     myTracks: null, playlists: [], playlistTracks: new Map(), search: null,
+    localPlaylists: [], localPlaylistTracks: new Map(),
     view: { type: 'my' }, displayed: [], queue: [], order: [], pos: -1, current: null
   });
+  playlistNav.textContent = '';
   updateNowPlaying();
   appView.classList.add('hidden');
   bottomBar.classList.add('hidden');
@@ -219,17 +350,27 @@ function updateLocalCount() {
 
 async function loadPlaylists() {
   playlistNav.textContent = '';
-  const ph = document.createElement('div');
-  ph.className = 'nav-sub';
-  ph.style.padding = '8px 12px';
-  ph.textContent = 'Загрузка…';
-  playlistNav.appendChild(ph);
+
+  // Свои плейлисты читаются с диска мгновенно — рисуем их сразу, не дожидаясь ВК.
+  try {
+    state.localPlaylists = await vkCall('lib:list');
+  } catch (e) {
+    state.localPlaylists = [];
+  }
+  renderPlaylistNav();
 
   try {
     state.playlists = await vkCall('playlists:get');
   } catch (e) {
-    ph.textContent = e.message;
-    return;
+    state.playlists = [];
+    if (!state.localPlaylists.length) {
+      const ph = document.createElement('div');
+      ph.className = 'nav-sub';
+      ph.style.padding = '8px 12px';
+      ph.textContent = e.message;
+      playlistNav.appendChild(ph);
+      return;
+    }
   }
   renderPlaylistNav();
 }
@@ -272,6 +413,160 @@ async function loadPlaylistTracks(pl) {
   return state.playlistTracks.get(key);
 }
 
+// ---------------------------------------------------------------- Свои плейлисты
+
+async function loadLocalPlaylistTracks(id) {
+  if (!state.localPlaylistTracks.has(id)) {
+    const tracks = stampTracks(await vkCall('lib:tracks', id));
+    // ВК не отдаёт обложки внутри маленьких плейлистов — подтянем из «Моей музыки»
+    const known = state.myTracks;
+    if (known && known.length) {
+      const byName = new Map();
+      for (const t of known) if (t.cover) byName.set(`${t.artist}\u0000${t.title}`, t.cover);
+      for (const t of tracks) {
+        if (!t.cover) t.cover = byName.get(`${t.artist}\u0000${t.title}`) || '';
+      }
+    }
+    state.localPlaylistTracks.set(id, tracks);
+  }
+  // Копия: renderTracks и очередь не должны менять закэшированный массив
+  return state.localPlaylistTracks.get(id).slice();
+}
+
+function invalidateLocalPlaylist(id) {
+  state.localPlaylistTracks.delete(id);
+}
+
+async function refreshLocalPlaylists() {
+  try {
+    state.localPlaylists = await vkCall('lib:list');
+  } catch (e) {
+    state.localPlaylists = [];
+  }
+  renderPlaylistNav();
+}
+
+async function createPlaylistFlow() {
+  const title = await openModal({
+    title: 'Новый плейлист',
+    text: 'Название можно изменить позже. Плейлисты хранятся на вашем устройстве.',
+    okLabel: 'Создать',
+    placeholder: 'Например: Вечернее'
+  });
+  if (!title) return null;
+
+  try {
+    const pl = await vkCall('lib:create', title);
+    await refreshLocalPlaylists();
+    toast(`Плейлист «${pl.title}» создан`);
+    return pl;
+  } catch (e) {
+    toast('Не удалось создать плейлист: ' + e.message);
+    return null;
+  }
+}
+
+async function renamePlaylistFlow(pl) {
+  const title = await openModal({
+    title: 'Переименовать плейлист',
+    text: 'Введите новое название.',
+    value: pl.title,
+    okLabel: 'Сохранить'
+  });
+  if (!title || title === pl.title) return;
+
+  try {
+    await vkCall('lib:rename', pl.id, title);
+    await refreshLocalPlaylists();
+    if (state.view.type === 'local-playlist' && state.view.id === pl.id) {
+      state.view.playlist = { ...pl, title };
+      setHeader({ kind: 'Свой плейлист', title, sub: $('view-sub').textContent, icon: '★' });
+    }
+    toast('Плейлист переименован');
+  } catch (e) {
+    toast('Не удалось переименовать: ' + e.message);
+  }
+}
+
+async function deletePlaylistFlow(pl) {
+  const ok = await openConfirm({
+    title: 'Удалить плейлист?',
+    text: `Плейлист «${pl.title}» будет удалён. Треки останутся в «Моей музыке».`,
+    okLabel: 'Удалить'
+  });
+  if (!ok) return;
+
+  try {
+    await vkCall('lib:remove', pl.id);
+    invalidateLocalPlaylist(pl.id);
+    await refreshLocalPlaylists();
+    if (state.view.type === 'local-playlist' && state.view.id === pl.id) openView({ type: 'my' });
+    toast('Плейлист удалён');
+  } catch (e) {
+    toast('Не удалось удалить: ' + e.message);
+  }
+}
+
+async function addTrackToPlaylist(pl, track) {
+  try {
+    const res = await vkCall('lib:addTrack', pl.id, track);
+    invalidateLocalPlaylist(pl.id);
+    await refreshLocalPlaylists();
+    toast(res.added
+      ? `«${track.title}» добавлен в «${pl.title}»`
+      : `«${track.title}» уже есть в «${pl.title}»`);
+  } catch (e) {
+    toast('Не удалось добавить: ' + e.message);
+  }
+}
+
+async function removeTrackFromPlaylist(pl, track) {
+  try {
+    await vkCall('lib:removeTrack', pl.id, track.id);
+    invalidateLocalPlaylist(pl.id);
+    await refreshLocalPlaylists();
+    if (state.view.type === 'local-playlist' && state.view.id === pl.id) {
+      const tracks = await loadLocalPlaylistTracks(pl.id);
+      if (!tracks.length) {
+        openView({ type: 'local-playlist', id: pl.id, playlist: pl });
+      } else {
+        $('view-sub').textContent = `${pluralTracks(tracks.length)} · ${formatTotal(tracks)}`;
+        renderTracks();
+      }
+    }
+    toast(`«${track.title}» убран из плейлиста`);
+  } catch (e) {
+    toast('Не удалось убрать трек: ' + e.message);
+  }
+}
+
+// ---------------------------------------------------------------- Меню плейлиста
+
+function openPlaylistMenu(e, pl, isLocal) {
+  closeCtxMenu();
+  const frag = document.createDocumentFragment();
+  frag.appendChild(ctxTitle(pl.title));
+
+  if (isLocal) {
+    frag.appendChild(ctxItem('Переименовать', '✎', () => renamePlaylistFlow(pl)));
+    frag.appendChild(ctxItem('Удалить плейлист', '🗑', () => deletePlaylistFlow(pl), { danger: true }));
+    frag.appendChild(ctxItem('Добавить из «Моей музыки»', '＋', () => openView({ type: 'my' })));
+  } else {
+    frag.appendChild(ctxItem('Открыть плейлист', '▶', () => openView({ type: 'playlist', key: `${pl.ownerId}_${pl.id}`, playlist: pl })));
+    frag.appendChild(ctxItem('Создать свой плейлист', '＋', createPlaylistFlow));
+  }
+
+  ctxMenu.appendChild(frag);
+  placeCtxMenu(e.clientX, e.clientY);
+}
+
+$('btn-new-playlist').addEventListener('click', createPlaylistFlow);
+
+$('btn-del-playlist').addEventListener('click', () => {
+  const v = state.view;
+  if (v.type === 'local-playlist') deletePlaylistFlow(v.playlist);
+});
+
 // ---------------------------------------------------------------- Навигация
 
 function setActiveNav() {
@@ -281,7 +576,10 @@ function setActiveNav() {
   if (v.type === 'my') el = $('nav-my');
   else if (v.type === 'local') el = $('nav-local');
   else if (v.type === 'search') el = $('nav-search');
-  else if (v.type === 'playlist') el = playlistNav.querySelector(`[data-key="${v.key}"]`);
+  else if (v.type === 'artist') el = $('nav-search');
+  else if (v.type === 'queue') el = $('nav-queue');
+  else if (v.type === 'playlist') el = playlistNav.querySelector(`[data-key="${CSS.escape(v.key)}"]`);
+  else if (v.type === 'local-playlist') el = playlistNav.querySelector(`[data-key="${CSS.escape('local:' + v.id)}"]`);
   if (el) el.classList.add('active');
 }
 
@@ -314,6 +612,10 @@ async function openView(view) {
   filterInput.value = '';
   setActiveNav();
   $('btn-import').classList.toggle('hidden', view.type !== 'local');
+  // Свой плейлист можно очистить только из его же экрана — кнопка видна там
+  $('btn-del-playlist').classList.toggle('hidden', view.type !== 'local-playlist');
+  // В очереди перемешивать нечего: порядок уже задан
+  $('btn-shuffle-play').classList.toggle('hidden', view.type === 'queue');
   const token = Symbol('view');
   state.viewToken = token;
   state.prefetchActive = false;
@@ -362,6 +664,47 @@ async function openView(view) {
       renderTracks();
       state.prefetchActive = true;
       schedulePrefetch(state.search.tracks);
+    } else if (view.type === 'artist') {
+      setHeader({ kind: 'Артист', title: view.name, sub: '', icon: '♪' });
+      if (!view.tracks) {
+        showPlaceholder(`Ищем треки ${view.name}…`);
+        return;
+      }
+      $('view-sub').textContent = pluralTracks(view.tracks.length) + (view.more ? '+' : '');
+      renderTracks();
+      state.prefetchActive = true;
+      schedulePrefetch(view.tracks);
+    } else if (view.type === 'queue') {
+      setHeader({ kind: 'Воспроизведение', title: 'Очередь', sub: '', icon: '≡' });
+      const list = state.order.map((i) => state.queue[i]).filter(Boolean);
+      if (!list.length) {
+        showPlaceholder('Очередь пуста. Нажмите ▶ на любом треке или ≡, чтобы добавить его сюда.', false, {
+          label: 'Перейти в «Мою музыку»',
+          onClick: () => openView({ type: 'my' })
+        });
+        return;
+      }
+      const left = state.pos >= 0 ? state.order.length - state.pos - 1 : list.length;
+      $('view-sub').textContent = `${pluralTracks(list.length)} · осталось ${left}`;
+      renderTracks();
+    } else if (view.type === 'local-playlist') {
+      const pl = view.playlist;
+      setHeader({ kind: 'Свой плейлист', title: pl.title, sub: '', icon: '★' });
+      showPlaceholder('Загрузка…');
+      const tracks = await loadLocalPlaylistTracks(pl.id);
+      if (state.viewToken !== token) return;
+      if (!tracks.length) {
+        $('view-sub').textContent = 'Пока пусто';
+        showPlaceholder('В этом плейлисте пока пусто. Нажмите ＋ у любого трека, чтобы добавить его сюда.', false, {
+          label: 'Перейти в «Мою музыку»',
+          onClick: () => openView({ type: 'my' })
+        });
+        return;
+      }
+      $('view-sub').textContent = `${pluralTracks(tracks.length)} · ${formatTotal(tracks)}`;
+      renderTracks();
+      state.prefetchActive = true;
+      schedulePrefetch(tracks);
     }
   } catch (e) {
     if (state.viewToken === token) showPlaceholder(e.message, true);
@@ -374,55 +717,280 @@ function currentViewTracks() {
   if (v.type === 'local') return state.localTracks || [];
   if (v.type === 'playlist') return state.playlistTracks.get(v.key) || [];
   if (v.type === 'search') return (state.search && state.search.tracks) || [];
+  if (v.type === 'artist') return v.tracks || [];
+  // Очередь показываем в порядке воспроизведения, а не в порядке добавления
+  if (v.type === 'queue') return state.order.map((i) => state.queue[i]).filter(Boolean);
+  if (v.type === 'local-playlist') return state.localPlaylistTracks.get(v.id) || [];
   return [];
 }
 
 $('nav-my').addEventListener('click', () => openView({ type: 'my' }));
 $('nav-local').addEventListener('click', () => openView({ type: 'local' }));
-$('nav-search').addEventListener('click', () => { if (state.search) openView({ type: 'search' }); });
+$('nav-search').addEventListener('click', () => {
+  if (state.search) openView({ type: 'search' });
+  else if (state.view.type === 'artist') openView(state.view);
+});
+$('nav-queue').addEventListener('click', () => openView({ type: 'queue' }));
+
+// ---------------------------------------------------------------- Контекстное меню
+
+const ctxMenu = $('ctx-menu');
+
+function closeCtxMenu() {
+  ctxMenu.classList.add('hidden');
+  ctxMenu.textContent = '';
+}
+
+function ctxItem(label, icon, onClick, opts = {}) {
+  const btn = document.createElement('button');
+  btn.className = 'ctx-item' + (opts.danger ? ' danger' : '');
+  btn.setAttribute('role', 'menuitem');
+  if (opts.title) btn.title = opts.title;
+
+  const ico = document.createElement('span');
+  ico.className = 'ctx-ico';
+  ico.textContent = icon || '';
+  const text = document.createElement('span');
+  text.textContent = label;
+  text.style.overflow = 'hidden';
+  text.style.textOverflow = 'ellipsis';
+  text.style.whiteSpace = 'nowrap';
+
+  btn.append(ico, text);
+  btn.addEventListener('click', () => {
+    closeCtxMenu();
+    onClick();
+  });
+  return btn;
+}
+
+function ctxTitle(text) {
+  const div = document.createElement('div');
+  div.className = 'ctx-title';
+  div.textContent = text;
+  return div;
+}
+
+function ctxSeparator() {
+  const div = document.createElement('div');
+  div.className = 'ctx-sep';
+  return div;
+}
+
+// Меню позиционируем по курсору, но не выпускаем за пределы окна
+function placeCtxMenu(x, y) {
+  ctxMenu.classList.remove('hidden');
+  ctxMenu.style.left = '0px';
+  ctxMenu.style.top = '0px';
+  const box = ctxMenu.getBoundingClientRect();
+  const left = Math.min(x, window.innerWidth - box.width - 10);
+  const top = Math.min(y, window.innerHeight - box.height - 10);
+  ctxMenu.style.left = Math.max(10, left) + 'px';
+  ctxMenu.style.top = Math.max(10, top) + 'px';
+}
+
+document.addEventListener('mousedown', (e) => {
+  if (!ctxMenu.classList.contains('hidden') && !ctxMenu.contains(e.target)) closeCtxMenu();
+});
+window.addEventListener('blur', closeCtxMenu);
+window.addEventListener('resize', closeCtxMenu);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    closeCtxMenu();
+    if (!$('modal-backdrop').classList.contains('hidden')) closeModal();
+  }
+});
+
+// ---------------------------------------------------------------- Модальное окно
+
+let modalResolve = null;
+// 'input' — обычный ввод названия, 'confirm' — вопрос да/нет (поле ввода скрыто)
+let modalMode = 'input';
+
+function closeModal() {
+  $('modal-backdrop').classList.add('hidden');
+  const r = modalResolve;
+  modalResolve = null;
+  if (r) r(modalMode === 'confirm' ? false : null);
+}
+
+function showModal() {
+  const input = $('modal-input');
+  input.classList.toggle('hidden', modalMode === 'confirm');
+  $('modal-ok').classList.toggle('danger', modalMode === 'confirm');
+  $('modal-backdrop').classList.remove('hidden');
+
+  setTimeout(() => {
+    if (modalMode === 'confirm') {
+      $('modal-ok').focus();
+    } else {
+      input.focus();
+      input.select();
+    }
+  }, 30);
+}
+
+function openModal({ title, text, value = '', okLabel = 'Создать', placeholder = '' }) {
+  modalMode = 'input';
+  $('modal-title').textContent = title;
+  $('modal-text').textContent = text;
+  $('modal-ok').textContent = okLabel;
+  const input = $('modal-input');
+  input.value = value;
+  input.placeholder = placeholder;
+  showModal();
+
+  return new Promise((resolve) => {
+    modalResolve = resolve;
+  });
+}
+
+// Своё подтверждение вместо window.confirm: нативный диалог блокирует рендерер
+// и выглядит системным окном посреди тёмного интерфейса.
+function openConfirm({ title, text, okLabel = 'Удалить' }) {
+  modalMode = 'confirm';
+  $('modal-title').textContent = title;
+  $('modal-text').textContent = text;
+  $('modal-ok').textContent = okLabel;
+  $('modal-input').value = '';
+  showModal();
+
+  return new Promise((resolve) => {
+    modalResolve = resolve;
+  });
+}
+
+function submitModal() {
+  const r = modalResolve;
+  if (!r) return;
+
+  if (modalMode === 'confirm') {
+    modalResolve = null;
+    $('modal-backdrop').classList.add('hidden');
+    r(true);
+    return;
+  }
+
+  const value = $('modal-input').value.trim();
+  if (!value) {
+    $('modal-input').focus();
+    return;
+  }
+  modalResolve = null;
+  $('modal-backdrop').classList.add('hidden');
+  r(value);
+}
+
+$('modal-ok').addEventListener('click', submitModal);
+$('modal-cancel').addEventListener('click', closeModal);
+$('modal-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') submitModal();
+});
+$('modal-backdrop').addEventListener('mousedown', (e) => {
+  if (e.target === $('modal-backdrop')) closeModal();
+});
 
 function renderPlaylistNav() {
   playlistNav.textContent = '';
-  $('playlists-count').textContent = state.playlists.length || '';
 
-  if (!state.playlists.length) {
+  const frag = document.createDocumentFragment();
+
+  // Свои плейлисты — сверху: они редактируемые
+  for (const pl of state.localPlaylists) {
+    frag.appendChild(createPlaylistNavItem({
+      key: 'local:' + pl.id,
+      playlist: pl,
+      title: pl.title,
+      sub: pluralTracks(pl.size),
+      icon: pl.cover ? null : '★',
+      cover: pl.cover,
+      local: true
+    }));
+  }
+
+  if (state.localPlaylists.length && state.playlists.length) {
+    const sep = document.createElement('div');
+    sep.className = 'nav-sep';
+    frag.appendChild(sep);
+  }
+
+  // Плейлисты ВК
+  for (const pl of state.playlists) {
+    const key = `${pl.ownerId}_${pl.id}`;
+    frag.appendChild(createPlaylistNavItem({
+      key,
+      playlist: pl,
+      title: pl.title,
+      sub: [pl.author, pluralTracks(pl.size)].filter(Boolean).join(' · '),
+      icon: '☰',
+      cover: pl.cover,
+      local: false
+    }));
+  }
+
+  if (!frag.childNodes.length) {
     const empty = document.createElement('div');
     empty.className = 'nav-sub';
     empty.style.padding = '8px 12px';
     empty.textContent = 'Плейлистов нет';
-    playlistNav.appendChild(empty);
-    return;
+    frag.appendChild(empty);
   }
 
-  const frag = document.createDocumentFragment();
-  for (const pl of state.playlists) {
-    const key = `${pl.ownerId}_${pl.id}`;
-    const btn = document.createElement('button');
-    btn.className = 'nav-item';
-    btn.dataset.key = key;
-    btn.title = pl.title;
-
-    const icon = document.createElement('span');
-    icon.className = 'nav-icon';
-    icon.setAttribute('aria-hidden', 'true');
-    setCover(icon, pl.cover, '☰');
-
-    const text = document.createElement('span');
-    text.className = 'nav-text';
-    const label = document.createElement('span');
-    label.className = 'nav-label';
-    label.textContent = pl.title;
-    const sub = document.createElement('span');
-    sub.className = 'nav-sub';
-    sub.textContent = [pl.author, pluralTracks(pl.size)].filter(Boolean).join(' · ');
-    text.append(label, sub);
-
-    btn.append(icon, text);
-    btn.addEventListener('click', () => openView({ type: 'playlist', key, playlist: pl }));
-    frag.appendChild(btn);
-  }
   playlistNav.appendChild(frag);
   setActiveNav();
+}
+
+function createPlaylistNavItem({ key, playlist, title, sub, icon, cover, local }) {
+  const btn = document.createElement('button');
+  btn.className = 'nav-item';
+  btn.dataset.key = key;
+  btn.title = title;
+
+  const iconEl = document.createElement('span');
+  iconEl.className = 'nav-icon';
+  iconEl.setAttribute('aria-hidden', 'true');
+  setCover(iconEl, cover, icon);
+
+  const text = document.createElement('span');
+  text.className = 'nav-text';
+  const label = document.createElement('span');
+  label.className = 'nav-label';
+  label.textContent = title;
+  const subEl = document.createElement('span');
+  subEl.className = 'nav-sub';
+  subEl.textContent = sub;
+  text.append(label, subEl);
+
+  btn.append(iconEl, text);
+
+  // Чтобы кнопка вложенных действий не открывала плейлист, живём на mousedown
+  const more = document.createElement('span');
+  more.className = 'nav-more';
+  more.textContent = '⋯';
+  more.title = 'Действия с плейлистом';
+  more.setAttribute('role', 'button');
+  more.tabIndex = -1;
+  more.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openPlaylistMenu(e, playlist, local);
+  });
+  btn.appendChild(more);
+
+  btn.addEventListener('click', () => {
+    if (local) openLocalPlaylist(playlist);
+    else openView({ type: 'playlist', key, playlist });
+  });
+
+  btn.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    openPlaylistMenu(e, playlist, local);
+  });
+
+  return btn;
+}
+
+async function openLocalPlaylist(pl) {
+  await openView({ type: 'local-playlist', id: pl.id, playlist: pl });
 }
 
 // ---------------------------------------------------------------- Список треков
@@ -433,6 +1001,16 @@ function renderTracks() {
   state.displayed = q
     ? all.filter((t) => `${t.artist} ${t.title}`.toLowerCase().includes(q))
     : all.slice();
+
+  // В очереди номер строки не совпадает с позицией в order, если включён фильтр,
+  // поэтому запоминаем настоящие позиции по самим объектам треков.
+  state.orderOf = new Map();
+  if (state.view.type === 'queue') {
+    state.order.forEach((trackIdx, orderPos) => {
+      const t = state.queue[trackIdx];
+      if (t) state.orderOf.set(t, orderPos);
+    });
+  }
 
   tracksContainer.textContent = '';
   if (!state.displayed.length) {
@@ -487,9 +1065,19 @@ function createTrackRow(track, idx) {
   const title = document.createElement('div');
   title.className = 'track-title';
   title.textContent = track.title;
+
   const artist = document.createElement('div');
   artist.className = 'track-artist';
   artist.textContent = track.artist;
+  // По исполнителю можно перейти к его трекам; локальные файлы ищем в ВК так же
+  if (track.artist && track.artist !== '—') {
+    artist.classList.add('link');
+    artist.title = `Все треки: ${track.artist}`;
+    artist.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openArtist(track.artist);
+    });
+  }
   main.append(title, artist);
 
   const dur = document.createElement('div');
@@ -498,25 +1086,142 @@ function createTrackRow(track, idx) {
 
   row.append(num, cover, main, dur);
 
+  // ---- Действия при наведении: в очередь, в плейлист, (в плейлисте) убрать
+  const actions = document.createElement('div');
+  actions.className = 'track-actions';
+
+  const queueBtn = document.createElement('button');
+  queueBtn.className = 'track-act';
+  queueBtn.title = 'Добавить в очередь';
+  queueBtn.setAttribute('aria-label', 'Добавить в очередь');
+  queueBtn.textContent = '≡';
+  queueBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    addToQueue(track);
+  });
+  actions.appendChild(queueBtn);
+
+  const plBtn = document.createElement('button');
+  plBtn.className = 'track-act';
+  plBtn.title = 'Добавить в плейлист';
+  plBtn.setAttribute('aria-label', 'Добавить в плейлист');
+  plBtn.textContent = '＋';
+  plBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openAddToPlaylist(e, track);
+  });
+  actions.appendChild(plBtn);
+
+  // Удаление из конкретного плейлиста — только когда он открыт
+  const cur = state.view;
+  if (cur.type === 'local-playlist') {
+    const pl = cur.playlist;
+    const del = document.createElement('button');
+    del.className = 'track-act danger';
+    del.title = 'Убрать из плейлиста';
+    del.setAttribute('aria-label', 'Убрать из плейлиста');
+    del.textContent = '✕';
+    del.addEventListener('click', (e) => {
+      e.stopPropagation();
+      removeTrackFromPlaylist(pl, track);
+    });
+    actions.appendChild(del);
+  }
+
+  // Из очереди убираем по реальной позиции, а не по номеру строки
+  if (cur.type === 'queue') {
+    const orderPos = state.orderOf && state.orderOf.get(track);
+    const del = document.createElement('button');
+    del.className = 'track-act danger';
+    del.title = 'Убрать из очереди';
+    del.setAttribute('aria-label', 'Убрать из очереди');
+    del.textContent = '✕';
+    del.addEventListener('click', (e) => {
+      e.stopPropagation();
+      removeFromQueue(orderPos);
+    });
+    actions.appendChild(del);
+  }
+
+  // Локальный файл убираем из библиотеки целиком
   if (track.local) {
     const del = document.createElement('button');
-    del.className = 'track-del';
+    del.className = 'track-act danger';
     del.title = 'Убрать из библиотеки';
     del.setAttribute('aria-label', 'Убрать из библиотеки');
-    del.textContent = '✕';
+    del.textContent = '🗑';
     del.addEventListener('click', (e) => {
       e.stopPropagation();
       removeLocalTrack(track);
     });
-    row.appendChild(del);
+    actions.appendChild(del);
   }
+
+  row.appendChild(actions);
+
+  // Правая кнопка мыши — то же меню, что и по кнопке «＋»
+  row.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    openTrackMenu(e, track);
+  });
+
   return row;
+}
+
+// Меню по правому клику на треке
+function openTrackMenu(e, track) {
+  closeCtxMenu();
+  const frag = document.createDocumentFragment();
+  frag.appendChild(ctxTitle(`${track.artist} — ${track.title}`));
+
+  frag.appendChild(ctxItem('Добавить в очередь', '≡', () => addToQueue(track)));
+  frag.appendChild(ctxItem('Воспроизвести следующим', '⏭', () => playNextInQueue(track)));
+  frag.appendChild(ctxItem('Добавить в плейлист…', '＋', () => openAddToPlaylist(e, track)));
+  if (track.artist && track.artist !== '—') {
+    frag.appendChild(ctxItem(`Все треки: ${track.artist}`, '♪', () => openArtist(track.artist)));
+  }
+
+  const cur = state.view;
+  if (cur.type === 'local-playlist') {
+    frag.appendChild(ctxSeparator());
+    frag.appendChild(ctxItem('Убрать из плейлиста', '✕',
+      () => removeTrackFromPlaylist(cur.playlist, track), { danger: true }));
+  }
+
+  ctxMenu.appendChild(frag);
+  placeCtxMenu(e.clientX, e.clientY);
+}
+
+function openAddToPlaylist(e, track) {
+  closeCtxMenu();
+  const frag = document.createDocumentFragment();
+  frag.appendChild(ctxTitle(`В плейлист: ${track.title}`));
+
+  if (state.localPlaylists.length) {
+    for (const pl of state.localPlaylists) {
+      frag.appendChild(ctxItem(pl.title, '★', () => addTrackToPlaylist(pl, track)));
+    }
+    frag.appendChild(ctxSeparator());
+  } else {
+    const empty = document.createElement('div');
+    empty.className = 'ctx-empty';
+    empty.textContent = 'Своих плейлистов пока нет';
+    frag.appendChild(empty);
+  }
+
+  frag.appendChild(ctxItem('Создать плейлист…', '＋', async () => {
+    const pl = await createPlaylistFlow();
+    if (pl) await addTrackToPlaylist(pl, track);
+  }));
+
+  ctxMenu.appendChild(frag);
+  placeCtxMenu(e.clientX, e.clientY);
 }
 
 // Клик по уже играющему треку ставит его на паузу (или снимает с паузы),
 // а не начинает воспроизведение заново.
 tracksContainer.addEventListener('click', (e) => {
-  if (e.target.closest('.track-del')) return;
+  if (e.target.closest('.track-act') || e.target.closest('.track-artist.link')) return;
   const row = e.target.closest('.track');
   if (!row || row.classList.contains('unavailable')) return;
   activateTrack(Number(row.dataset.index));
@@ -532,6 +1237,19 @@ tracksContainer.addEventListener('keydown', (e) => {
 function activateTrack(index) {
   const track = state.displayed[index];
   if (!track) return;
+
+  // В экране очереди клик перескакивает по уже собранной очереди,
+  // а не пересобирает её заново из списка
+  if (state.view.type === 'queue') {
+    const orderIndex = index;
+    const isSame = state.current && state.current.id === track.id && state.pos === orderIndex;
+    if (isSame) {
+      togglePlay();
+      return;
+    }
+    playAt(orderIndex);
+    return;
+  }
 
   const isSame = state.current && state.current.id === track.id;
   const inQueue = isSame && state.queue[state.order[state.pos]] && state.queue[state.order[state.pos]].id === track.id;
@@ -675,6 +1393,89 @@ async function loadMoreSearch(button) {
   }
 }
 
+// ---------------------------------------------------------------- Артист
+
+// Отдельного метода «треки артиста» в al_audio.php нет, а поиск по имени даёт
+// как самого артиста, так и каверы. Поэтому ищем по имени и оставляем только
+// совпадения по исполнителю, дополнительно подмешивая треки из своей библиотеки.
+function normalizeArtist(str) {
+  return String(str || '')
+    .toLowerCase()
+    .replace(/ё/g, 'е')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
+
+function sameArtist(a, b) {
+  const x = normalizeArtist(a);
+  const y = normalizeArtist(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  // «Исполнитель feat. Кто-то» и «Исполнитель & Кто-то» считаем тем же артистом
+  const cut = (s) => s.split(' feat')[0].split(' ft ')[0].split(' & ')[0].split(',')[0].trim();
+  return cut(x) === cut(y);
+}
+
+async function openArtist(name) {
+  const clean = String(name || '').trim();
+  if (!clean) return;
+
+  const view = { type: 'artist', name: clean, tracks: null, more: null };
+  openView(view);
+  setActiveNav();
+
+  try {
+    const res = await vkCall('audio:search', clean);
+    if (state.view !== view) return;
+
+    const seen = new Set();
+    // Один и тот же трек ВК отдаёт с разными id (например, из разных плейлистов),
+    // поэтому дубликаты ловим ещё и по паре «исполнитель + название».
+    const seenNames = new Set();
+    const keyOf = (t) => `${normalizeArtist(t.artist)}\u0000${String(t.title || '').toLowerCase().trim()}`;
+    const out = [];
+
+    const push = (t) => {
+      if (seen.has(t.id) || seenNames.has(keyOf(t))) return;
+      seen.add(t.id);
+      seenNames.add(keyOf(t));
+      out.push(t);
+    };
+
+    // Сначала — треки из своей библиотеки: они уже с обложками и не тратят лимит ВК
+    for (const t of state.myTracks || []) {
+      if (sameArtist(t.artist, clean)) push(t);
+    }
+    for (const t of stampTracks(res.tracks || [])) {
+      if (sameArtist(t.artist, clean)) push(t);
+    }
+
+    view.tracks = out;
+    view.more = res.more || null;
+
+    if (state.view === view) {
+      if (!out.length) {
+        setHeader({ kind: 'Артист', title: clean, sub: '', icon: '♪' });
+        showPlaceholder(`Треков в исполнении «${clean}» не найдено. Попробуйте поиск по названию.`, false, {
+          label: 'Открыть поиск',
+          onClick: () => {
+            searchInput.value = clean;
+            searchInput.focus();
+          }
+        });
+        return;
+      }
+      // Плюс здесь не нужен: список уже отфильтрован по исполнителю
+      $('view-sub').textContent = pluralTracks(out.length);
+      renderTracks();
+      state.prefetchActive = true;
+      schedulePrefetch(out);
+    }
+  } catch (err) {
+    if (state.view === view) showPlaceholder('Не удалось загрузить треки артиста: ' + err.message, true);
+  }
+}
+
 // ---------------------------------------------------------------- Очередь
 
 function buildOrder(startIndex) {
@@ -700,7 +1501,77 @@ function buildOrder(startIndex) {
 function startQueue(list, startIndex) {
   state.queue = list.slice();
   buildOrder(startIndex);
+  updateQueueNav();
   playAt(state.pos);
+}
+
+// ---------------------------------------------------------------- Очередь: добавление
+
+// Счётчик в сайдбаре: он же показывает, что добавление сработало
+function updateQueueNav() {
+  const el = $('nav-queue-count');
+  if (!el) return;
+  el.textContent = state.order.length ? pluralTracks(state.order.length) : '';
+}
+
+// Кладём копию трека: у одного и того же трека могут быть разные ссылки,
+// и объект из «Моей музыки» нельзя переиспользовать в очереди напрямую.
+function enqueueTrack(track, { next = false } = {}) {
+  const item = { ...track };
+  state.queue.push(item);
+  const idx = state.queue.length - 1;
+
+  if (next && state.pos >= 0) {
+    state.order.splice(state.pos + 1, 0, idx);
+  } else {
+    state.order.push(idx);
+  }
+  updateQueueNav();
+  return idx;
+}
+
+// Удаление из очереди. Текущий трек не трогаем: сначала нужно переключиться,
+// иначе плеер останется без источника.
+// state.queue — сами треки, state.order — порядок воспроизведения (индексы в queue),
+// state.pos — позиция в order. Удаляем запись из order и сдвигаем pos.
+function removeFromQueue(orderIndex) {
+  if (orderIndex === state.pos) {
+    toast('Нельзя убрать трек, который играет прямо сейчас');
+    return;
+  }
+  const track = state.queue[state.order[orderIndex]];
+  if (!track) return;
+
+  state.order.splice(orderIndex, 1);
+  if (orderIndex < state.pos) state.pos -= 1;
+  updateQueueNav();
+  if (state.view.type === 'queue') openView({ type: 'queue' });
+  toast(`«${track.title}» убрана из очереди`);
+}
+
+function addToQueue(track) {
+  if (!track) return;
+
+  // Если ничего не играет — добавление в очередь логично начать сразу
+  if (!state.current || !state.order.length) {
+    startQueue([track], 0);
+    toast(`«${track.title}» — играет`);
+    return;
+  }
+
+  enqueueTrack(track);
+  const left = state.order.length - state.pos - 1;
+  toast(`«${track.title}» в очереди · ${left > 1 ? `далее ${pluralTracks(left)}` : 'следующим'}`);
+}
+
+function playNextInQueue(track) {
+  if (!track) return;
+  if (!state.current || !state.order.length) {
+    startQueue([track], 0);
+    return;
+  }
+  enqueueTrack(track, { next: true });
+  toast(`«${track.title}» заиграет следующим`);
 }
 
 function setShuffle(on) {

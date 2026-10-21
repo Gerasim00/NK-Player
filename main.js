@@ -1,8 +1,10 @@
-const { app, BrowserWindow, WebContentsView, ipcMain, session, dialog, Menu } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, session, dialog, Menu, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const vk = require('./vk-audio');
 const localMusic = require('./local-music');
+const library = require('./library');
+const updates = require('./updates');
 const discord = require('./discord-rpc');
 
 const IS_DEV = !app.isPackaged;
@@ -75,6 +77,7 @@ function setAuthViewBounds() {
 
 app.whenReady().then(() => {
   localMusic.init(app.getPath('userData'));
+  library.init(app.getPath('userData'));
   createWindow();
   discord.start();
 });
@@ -193,6 +196,48 @@ vkHandler('audio:resolve', (ses, arg) => {
   const req = Array.isArray(arg) ? { ids: arg } : (arg || {});
   const ids = Array.isArray(req.ids) ? req.ids.slice(0, 200) : [];
   return vk.resolveUrls(ses, ids, { background: !!req.background });
+});
+
+// ---------------------------------------------------------------- Локальные плейлисты
+
+function libHandler(channel, fn) {
+  ipcMain.handle(channel, (event, ...args) => {
+    try {
+      return { success: true, data: fn(...args) };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  });
+}
+
+libHandler('lib:list', () => library.list());
+libHandler('lib:tracks', (id) => library.tracks(String(id || '')));
+libHandler('lib:create', (title) => library.create(title));
+libHandler('lib:rename', (id, title) => library.rename(String(id || ''), title));
+libHandler('lib:remove', (id) => library.remove(String(id || '')));
+libHandler('lib:addTrack', (id, track) => library.addTrack(String(id || ''), track));
+libHandler('lib:removeTrack', (id, trackId) => library.removeTrack(String(id || ''), String(trackId || '')));
+
+// ---------------------------------------------------------------- Версия и обновления
+
+ipcMain.handle('app:version', () => ({ success: true, data: app.getVersion() }));
+
+ipcMain.handle('update:check', async (e, arg) => {
+  try {
+    return { success: true, data: await updates.check({ force: !!(arg && arg.force) }) };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// Ссылки на релиз открываем в системном браузере, а не внутри приложения
+ipcMain.handle('app:openExternal', async (e, url) => {
+  const safe = String(url || '');
+  if (!/^https:\/\/(github\.com|api\.github\.com)\//.test(safe)) {
+    return { success: false, error: 'Недопустимая ссылка' };
+  }
+  await shell.openExternal(safe);
+  return { success: true };
 });
 
 // ---------------------------------------------------------------- Discord

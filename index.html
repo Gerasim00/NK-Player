@@ -50,6 +50,11 @@
       box-shadow: 0 8px 24px -10px #2f7bffcc;
     }
     .btn:hover { filter: brightness(1.12); }
+    /* Опасное действие — вместо градиента приглушённый красный */
+    .btn.danger {
+      background: linear-gradient(135deg, #e0455f, #a92c46);
+      box-shadow: 0 8px 24px -10px #e0455fcc;
+    }
     .btn-ghost {
       background: var(--panel-2);
       color: var(--text);
@@ -109,21 +114,60 @@
     #qr-cancel-bar span { color: var(--muted); font-size: 14px; }
     #login-view {
       height: 100%;
-      padding-top: var(--titlebar-h);
-      display: flex; align-items: center; justify-content: center;
+      padding: calc(var(--titlebar-h) + 24px) 20px 32px;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      overflow-y: auto;
     }
     .login-card {
-      width: 420px;
+      width: 470px;
+      margin: auto;
       background: linear-gradient(180deg, #0d1226, #090c19);
       border: 1px solid #1b2544;
       border-radius: 22px;
-      padding: 36px;
+      padding: 32px 36px;
       text-align: center;
       box-shadow: 0 40px 90px -40px #2f7bff66, inset 0 1px 0 #ffffff08;
     }
     .login-card h1 { margin: 0 0 8px; font-size: 24px; letter-spacing: .01em; }
-    .login-card p { color: var(--muted); margin: 0 0 26px; line-height: 1.5; }
+    .login-card p { color: var(--muted); margin: 0 0 18px; line-height: 1.5; }
     .login-card .btn { width: 100%; padding: 12px; }
+    .btn:disabled { opacity: .45; filter: grayscale(.5); cursor: not-allowed; box-shadow: none; }
+
+    /* ---------- Пользовательское соглашение ---------- */
+    .terms-text {
+      max-height: 172px; overflow-y: auto;
+      text-align: left;
+      background: #060a16;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 14px;
+      font-size: 12px; line-height: 1.55; color: var(--muted);
+      white-space: pre-line;
+    }
+    .terms-text strong { color: var(--text); display: block; margin-bottom: 8px; }
+    .terms-row {
+      display: flex; align-items: center; justify-content: space-between;
+      margin: 16px 0 8px;
+      font-size: 11px; font-weight: 700; letter-spacing: .08em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .terms-toggle {
+      font-size: 11px; font-weight: 600; letter-spacing: 0;
+      text-transform: none; color: var(--accent);
+      padding: 2px 6px; border-radius: 6px;
+    }
+    .terms-toggle:hover { background: #2f7bff1f; }
+    .terms-check {
+      display: flex; gap: 10px; align-items: flex-start;
+      margin: 12px 0 16px; text-align: left; cursor: pointer;
+      font-size: 12.5px; line-height: 1.45; color: var(--text);
+    }
+    .terms-check input {
+      margin: 1px 0 0; width: 16px; height: 16px; flex: none;
+      accent-color: var(--accent); cursor: pointer;
+    }
     .logo {
       width: 104px; height: 104px; margin: 0 auto 20px;
       border-radius: 50%;
@@ -163,6 +207,13 @@
       text-transform: uppercase; letter-spacing: .09em;
       display: flex; justify-content: space-between; align-items: center;
     }
+    .nav-add {
+      width: 20px; height: 20px; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--muted); font-size: 14px; line-height: 1;
+      border: 1px solid var(--border); background: var(--panel-2);
+    }
+    .nav-add:hover { color: var(--text); background: var(--hover); border-color: #2f7bff66; }
     .nav-item {
       display: flex; align-items: center; gap: 10px;
       width: 100%;
@@ -173,6 +224,15 @@
       border: 1px solid transparent;
     }
     .nav-item:hover { background: var(--hover); }
+    .nav-item .nav-more {
+      flex: none; width: 22px; height: 22px; border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--muted); font-size: 15px; line-height: 1;
+      opacity: 0; transition: opacity .12s;
+    }
+    .nav-item:hover .nav-more, .nav-item:focus-within .nav-more { opacity: 1; }
+    .nav-more:hover { background: #1c2545; color: var(--text); }
+    .nav-sep { height: 1px; background: #131b32; margin: 7px 10px; }
     .nav-item.active {
       background: linear-gradient(90deg, #2f7bff26, #7b5cff14);
       border-color: #2f7bff4d;
@@ -297,15 +357,23 @@
     .track-title, .track-artist { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .track-title { font-weight: 500; }
     .track-artist { color: var(--muted); font-size: 13px; }
-    .track-dur { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
-    .track-del {
-      position: absolute; right: 96px; top: 50%; transform: translateY(-50%);
-      width: 28px; height: 28px; border-radius: 8px;
-      display: none; align-items: center; justify-content: center;
-      color: var(--muted); font-size: 15px;
+    .track-dur { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; transition: opacity .12s; }
+    .track:hover .track-dur { opacity: 0; }
+    .track-actions {
+      position: absolute; right: 22px; top: 50%; transform: translateY(-50%);
+      display: flex; align-items: center; gap: 2px;
     }
-    .track:hover .track-del { display: flex; }
-    .track-del:hover { background: #ff5c7a22; color: var(--danger); }
+    .track-act {
+      width: 28px; height: 28px; border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--muted); font-size: 14px; line-height: 1;
+      opacity: 0; transition: opacity .12s;
+    }
+    .track:hover .track-act, .track-act:focus-visible { opacity: 1; }
+    .track-act:hover { background: var(--hover); color: var(--text); }
+    .track-act.danger:hover { background: #ff5c7a22; color: var(--danger); }
+    .track-artist.link { cursor: pointer; }
+    .track-artist.link:hover { color: #8fb9ff; text-decoration: underline; text-underline-offset: 2px; }
     .placeholder { padding: 40px 28px; color: var(--muted); text-align: center; }
     .placeholder.error { color: var(--danger); }
     .placeholder .btn { margin-top: 16px; }
@@ -432,6 +500,86 @@
     .eq-scale-row span { white-space: nowrap; }
     .eq-scale-row input { flex: 1; accent-color: var(--accent); }
 
+    /* ---------- Контекстное меню ---------- */
+    #ctx-menu {
+      position: fixed; z-index: 90;
+      min-width: 208px; max-width: 268px;
+      background: #0c1124f2; backdrop-filter: blur(10px);
+      border: 1px solid #22305c; border-radius: 12px;
+      padding: 6px;
+      box-shadow: 0 24px 50px -18px #000, 0 0 0 1px #2f7bff1a;
+    }
+    #ctx-menu .ctx-title {
+      padding: 6px 10px 8px;
+      color: var(--muted); font-size: 11px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      border-bottom: 1px solid #1a2340; margin-bottom: 5px;
+    }
+    #ctx-menu .ctx-item {
+      display: flex; align-items: center; gap: 9px;
+      width: 100%; padding: 8px 10px; border-radius: 8px;
+      color: var(--text); font-size: 13px; text-align: left;
+    }
+    #ctx-menu .ctx-item:hover { background: var(--hover); }
+    #ctx-menu .ctx-item.danger { color: #ff8fa3; }
+    #ctx-menu .ctx-item.danger:hover { background: #ff5c7a1f; }
+    #ctx-menu .ctx-item .ctx-ico { width: 16px; text-align: center; color: var(--muted); flex: none; }
+    #ctx-menu .ctx-sep { height: 1px; background: #1a2340; margin: 5px 0; }
+    #ctx-menu .ctx-sub {
+      padding: 5px 10px 3px;
+      color: var(--muted); font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .08em;
+    }
+    #ctx-menu .ctx-empty { padding: 8px 10px; color: var(--muted); font-size: 12px; }
+
+    /* ---------- Модальное окно ---------- */
+    #modal-backdrop {
+      position: fixed; inset: 0; z-index: 80;
+      background: #03040bcc; backdrop-filter: blur(3px);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .modal {
+      width: 400px;
+      background: linear-gradient(180deg, #0d1226, #080b18);
+      border: 1px solid #1d2850; border-radius: 16px;
+      padding: 22px 24px;
+      box-shadow: 0 40px 80px -30px #000, 0 0 0 1px #2f7bff1a;
+    }
+    .modal h3 { margin: 0 0 6px; font-size: 17px; }
+    .modal p { color: var(--muted); font-size: 13px; margin: 0 0 16px; line-height: 1.45; }
+    .modal .input { margin-bottom: 18px; }
+    .modal-foot { display: flex; justify-content: flex-end; gap: 8px; }
+
+    /* ---------- Плашка обновления ---------- */
+    /* Плашка висит внизу справа: сверху она перекрывала «Фильтр» и «Перемешать» */
+    #update-banner {
+      position: fixed; right: 16px; bottom: calc(var(--player-h) + 16px);
+      z-index: 75; width: 320px;
+      background: linear-gradient(160deg, #131a35, #0b0f1f);
+      border: 1px solid #2f7bff5c; border-radius: 14px;
+      padding: 14px 16px;
+      box-shadow: 0 26px 60px -24px #000, 0 0 34px -18px #7b5cff;
+    }
+    #update-banner .ub-title { font-size: 13px; font-weight: 700; margin-bottom: 5px; }
+    #update-banner .ub-text { color: var(--muted); font-size: 12px; line-height: 1.5; margin-bottom: 12px; }
+    #update-banner .ub-actions { display: flex; gap: 8px; }
+    #update-banner .ub-actions .btn-ghost { padding: 6px 11px; font-size: 12px; }
+    #update-banner .ub-actions .btn { padding: 7px 13px; font-size: 12px; border-radius: 8px; }
+
+    /* ---------- Версия в сайдбаре ---------- */
+    .version-row {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 8px; padding: 0 10px 8px;
+      color: var(--muted); font-size: 11px;
+    }
+    .version-row button {
+      color: var(--muted); font-size: 11px;
+      padding: 3px 7px; border-radius: 6px;
+      border: 1px solid transparent;
+    }
+    .version-row button:hover { color: var(--text); background: var(--hover); border-color: var(--border); }
+    .version-row button.busy { opacity: .55; pointer-events: none; }
+
     /* ---------- Тост ---------- */
     #toast {
       position: fixed; left: 50%; bottom: calc(var(--player-h) + 18px);
@@ -485,7 +633,35 @@
       <div class="logo" aria-hidden="true"><img src="assets/icon.png" alt=""></div>
       <h1>NK Player</h1>
       <p>Войдите через ВКонтакте: откроется страница входа с QR-кодом. Отсканируйте его в приложении ВК на телефоне.</p>
-      <button id="btn-oauth" class="btn">Войти через ВКонтакте</button>
+
+      <div class="terms-row">
+        <span>Пользовательское соглашение</span>
+        <button id="terms-toggle" class="terms-toggle" type="button">Свернуть</button>
+      </div>
+
+      <div class="terms-text" id="terms-text">
+        <strong>Пользовательское соглашение</strong>
+1. NK Player — неофициальный клиент ВКонтакте. Приложение не связано с ООО «ВК» и не является его продуктом.
+
+2. Для работы плеера приложение использует вашу действующую сессию ВКонтакте. Логин и пароль вводятся только на странице ВК и приложению не передаются.
+
+3. Разработчик не несёт ответственности за утрату, изменение или раскрытие персональных данных, аккаунта, переписки или иной информации, если это произошло в результате утечки данных, взлома, вредоносного ПО, атаки на устройство или сеть, действий третьих лиц либо иных обстоятельств, не зависящих от разработчика.
+
+4. Приложение предоставляется «как есть», без каких-либо гарантий. Разработчик не несёт ответственности за любые прямые или косвенные убытки, возникшие в результате использования или невозможности использования приложения.
+
+5. Приложение не хранит ваши пароли и не передаёт данные третьим лицам. Локальные файлы, настройки эквалайзера и плейлисты остаются на вашем устройстве.
+
+6. Сервисы ВКонтакте могут изменить свою работу в любой момент, что может привести к недоступности отдельных функций приложения.
+
+7. Принимая соглашение, вы подтверждаете, что понимаете и принимаете указанные условия и используете приложение добровольно, на свой риск.
+      </div>
+
+      <label class="terms-check" for="terms-accept">
+        <input type="checkbox" id="terms-accept">
+        <span>Я прочитал(а) и принимаю условия пользовательского соглашения, включая пункт об ответственности за сохранность данных.</span>
+      </label>
+
+      <button id="btn-oauth" class="btn" disabled title="Сначала примите пользовательское соглашение">Войти через ВКонтакте</button>
       <div id="status" role="alert"></div>
     </div>
   </div>
@@ -511,10 +687,21 @@
           <span class="nav-icon" aria-hidden="true">⌕</span>
           <span class="nav-text"><span class="nav-label">Результаты поиска</span><span class="nav-sub" id="nav-search-q"></span></span>
         </button>
+        <button class="nav-item" id="nav-queue" data-view="queue">
+          <span class="nav-icon" aria-hidden="true">≡</span>
+          <span class="nav-text"><span class="nav-label">Очередь</span><span class="nav-sub" id="nav-queue-count"></span></span>
+        </button>
       </nav>
-      <div class="nav-title"><span>Плейлисты</span><span id="playlists-count"></span></div>
+      <div class="nav-title">
+        <span>Плейлисты</span>
+        <button id="btn-new-playlist" class="nav-add" title="Создать плейлист" aria-label="Создать плейлист">＋</button>
+      </div>
       <div id="playlist-nav" aria-label="Плейлисты"></div>
       <div class="sidebar-bottom">
+        <div class="version-row">
+          <span>NK Player <span id="app-version"></span></span>
+          <button id="btn-check-update" title="Проверить обновления">Проверить</button>
+        </div>
         <div class="account">
           <div class="account-avatar" id="account-avatar" aria-hidden="true"></div>
           <div class="account-text">
@@ -541,6 +728,7 @@
         <div class="header-actions">
           <input id="filter-input" class="input" type="search" placeholder="Фильтр в списке" aria-label="Фильтр по текущему списку" autocomplete="off">
           <button id="btn-import" class="btn-ghost hidden" title="Добавить свои файлы">＋ Добавить</button>
+          <button id="btn-del-playlist" class="btn-ghost hidden" title="Удалить этот плейлист">Удалить плейлист</button>
           <button id="btn-shuffle-play" class="btn-ghost" title="Перемешать и слушать">⤮ Перемешать</button>
           <button id="btn-play-view" class="btn-round" title="Слушать" aria-label="Слушать список">▶</button>
         </div>
@@ -600,6 +788,32 @@
       <span>Усиление</span>
       <input type="range" id="eq-preamp" min="-12" max="6" step="1" value="0" aria-label="Усиление эквалайзера">
       <span id="eq-preamp-val" class="eq-preamp-val">0 дБ</span>
+    </div>
+  </div>
+
+  <!-- Контекстное меню трека / плейлиста -->
+  <div id="ctx-menu" class="hidden" role="menu"></div>
+
+  <!-- Модальное окно ввода названия -->
+  <div id="modal-backdrop" class="hidden" role="dialog" aria-modal="true">
+    <div class="modal">
+      <h3 id="modal-title">Новый плейлист</h3>
+      <p id="modal-text">Введите название — его можно будет изменить позже.</p>
+      <input id="modal-input" class="input" type="text" maxlength="100" autocomplete="off">
+      <div class="modal-foot">
+        <button id="modal-cancel" class="btn-ghost">Отмена</button>
+        <button id="modal-ok" class="btn">Создать</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Плашка о новой версии -->
+  <div id="update-banner" class="hidden">
+    <div class="ub-title">Доступна новая версия</div>
+    <div class="ub-text" id="ub-text"></div>
+    <div class="ub-actions">
+      <button id="ub-later" class="btn-ghost">Позже</button>
+      <button id="ub-open" class="btn">Скачать</button>
     </div>
   </div>
 

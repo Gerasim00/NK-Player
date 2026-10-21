@@ -934,11 +934,18 @@ audio.addEventListener('play', () => {
   btnPlayPause.setAttribute('aria-label', 'Пауза');
   if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
   resumeEq();
+  pushDiscordPresence();
 });
 audio.addEventListener('pause', () => {
   btnPlayPause.textContent = '▶';
   btnPlayPause.setAttribute('aria-label', 'Воспроизведение');
   if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
+  pushDiscordPresence();
+});
+// Перемотка меняет только таймстемпы — обновляем статус, чтобы полоска в
+// Discord встала на новое место
+audio.addEventListener('seeked', () => {
+  if (state.current) pushDiscordPresence();
 });
 
 // ---------------------------------------------------------------- Эквалайзер
@@ -1194,7 +1201,62 @@ function updateNowPlaying() {
       ? new MediaMetadata({ title: t.title, artist: t.artist, artwork: art })
       : null;
   }
+
+  pushDiscordPresence();
 }
+
+// ---------------------------------------------------------------- Discord RPC
+
+// Статус в Discord живёт в главном процессе (там named pipe), сюда только
+// отправляем, что играет. Троттлинг и проверка лимитов — на той стороне.
+function pushDiscordPresence() {
+  const t = state.current;
+  if (!t) {
+    ipcRenderer.invoke('discord:update', null);
+    return;
+  }
+  ipcRenderer.invoke('discord:update', {
+    artist: t.artist,
+    title: t.title,
+    cover: /^https:\/\//.test(t.cover || '') ? t.cover : '',
+    paused: audio.paused,
+    position: audio.currentTime || 0,
+    duration: t.duration || 0
+  });
+}
+
+// ---------------------------------------------------------------- Кнопка Discord
+
+const btnDiscord = $('btn-discord');
+const DISCORD_KEY = 'nk.discordEnabled';
+
+function applyDiscordEnabled(on) {
+  btnDiscord.classList.toggle('on', on);
+  btnDiscord.setAttribute('aria-pressed', String(on));
+  try { localStorage.setItem(DISCORD_KEY, on ? '1' : '0'); } catch (e) {}
+}
+
+btnDiscord.addEventListener('click', async () => {
+  const on = !btnDiscord.classList.contains('on');
+  applyDiscordEnabled(on);
+  const res = await ipcRenderer.invoke('discord:set-enabled', on);
+  if (!on) {
+    toast('Статус в Discord отключён');
+    return;
+  }
+  const connected = res && res.data && res.data.connected;
+  toast(connected ? 'Статус в Discord включён' : 'Discord не запущен — включится автоматически');
+  if (state.current) pushDiscordPresence();
+});
+
+// Настройка переживает перезапуск: главный процесс стартует с включённым
+// статусом, поэтому при выключенном флаге гасим его сразу после загрузки.
+(() => {
+  let on = true;
+  try { on = localStorage.getItem(DISCORD_KEY) !== '0'; } catch (e) {}
+  applyDiscordEnabled(on);
+  if (!on) ipcRenderer.invoke('discord:set-enabled', false);
+})();
 
 if ('mediaSession' in navigator) {
   navigator.mediaSession.setActionHandler('play', () => audio.play().catch(() => {}));

@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const vk = require('./vk-audio');
 const localMusic = require('./local-music');
+const discord = require('./discord-rpc');
 
 const IS_DEV = !app.isPackaged;
 
@@ -75,11 +76,16 @@ function setAuthViewBounds() {
 app.whenReady().then(() => {
   localMusic.init(app.getPath('userData'));
   createWindow();
+  discord.start();
 });
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
+
+// Закрываем соединение с Discord до выхода, иначе процесс висит на открытом
+// named pipe и приложение не завершается.
+app.on('will-quit', () => discord.shutdown());
 
 // ---------------------------------------------------------------- Окно
 
@@ -188,3 +194,17 @@ vkHandler('audio:resolve', (ses, arg) => {
   const ids = Array.isArray(req.ids) ? req.ids.slice(0, 200) : [];
   return vk.resolveUrls(ses, ids, { background: !!req.background });
 });
+
+// ---------------------------------------------------------------- Discord
+
+ipcMain.handle('discord:update', (e, payload) => {
+  discord.update(payload);
+  return { success: true };
+});
+
+ipcMain.handle('discord:set-enabled', (e, on) => {
+  discord.setEnabled(!!on);
+  return { success: true, data: discord.status() };
+});
+
+ipcMain.handle('discord:status', () => ({ success: true, data: discord.status() }));

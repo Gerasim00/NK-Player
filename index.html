@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' https: data: file:; media-src 'self' https: blob: file:; connect-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self'; worker-src 'self' blob:">
+  <title>NK Player</title>
+  <style>
+    :root {
+      --bg: #05060f;
+      --bg-glow: #0a0e20;
+      --panel: #090c19;
+      --panel-2: #101528;
+      --panel-3: #151b31;
+      --hover: #161d35;
+      --border: #1a2340;
+      --text: #e9eefc;
+      --muted: #8791ad;
+      --accent: #2f7bff;
+      --accent-hover: #4a8dff;
+      --violet: #7b5cff;
+      --cyan: #4fd0ff;
+      --danger: #ff5c7a;
+      --titlebar-h: 44px;
+      --player-h: 88px;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: radial-gradient(1200px 700px at 18% -10%, #0d1836 0%, transparent 60%),
+                  radial-gradient(900px 600px at 100% 0%, #150f36 0%, transparent 55%),
+                  var(--bg);
+      color: var(--text);
+      font: 14px/1.4 "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+      overflow: hidden;
+      user-select: none;
+    }
+    button { font: inherit; color: inherit; border: none; background: none; cursor: pointer; }
+    button:focus-visible, input:focus-visible, .nav-item:focus-visible, .track:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .hidden { display: none !important; }
+    .btn {
+      background: linear-gradient(135deg, var(--accent), var(--violet));
+      color: #fff;
+      padding: 10px 18px;
+      border-radius: 10px;
+      font-weight: 600;
+      box-shadow: 0 8px 24px -10px #2f7bffcc;
+    }
+    .btn:hover { filter: brightness(1.12); }
+    .btn-ghost {
+      background: var(--panel-2);
+      color: var(--text);
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      border: 1px solid var(--border);
+    }
+    .btn-ghost:hover { background: var(--hover); border-color: #26345c; }
+    .input {
+      width: 100%;
+      padding: 9px 12px;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font: inherit;
+      outline: none;
+    }
+    .input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px #2f7bff26; }
+    .input::placeholder { color: var(--muted); }
+
+    /* ---------- Титульная панель (без рамки Windows) ---------- */
+    #titlebar {
+      position: fixed; top: 0; left: 0; right: 0; height: var(--titlebar-h);
+      display: flex; align-items: center; gap: 10px;
+      padding-left: 14px;
+      background: #07091a;
+      color: var(--text);
+      z-index: 10000;
+      -webkit-app-region: drag;
+      border-bottom: 1px solid #101733;
+    }
+    .tb-brand { display: flex; align-items: center; gap: 10px; pointer-events: none; }
+    .tb-brand img { width: 24px; height: 24px; border-radius: 50%; }
+    .tb-brand span { font-weight: 700; letter-spacing: .02em; }
+    .tb-brand small { color: var(--muted); font-weight: 400; margin-left: 6px; }
+    .tb-spacer { flex: 1; }
+    .tb-controls { display: flex; height: 100%; -webkit-app-region: no-drag; }
+    .tb-btn {
+      width: 46px; height: 100%;
+      display: flex; align-items: center; justify-content: center;
+      color: #b9c3dd; font-size: 13px;
+      transition: background .12s;
+    }
+    .tb-btn:hover { background: #151c33; color: #fff; }
+    .tb-btn.close:hover { background: #d81e3c; color: #fff; }
+    .tb-btn svg { display: block; }
+
+    /* ---------- Вход ---------- */
+    #qr-cancel-bar {
+      position: fixed; top: var(--titlebar-h); left: 0; right: 0; height: 46px;
+      background: var(--panel); border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 20px; z-index: 9999;
+    }
+    #qr-cancel-bar span { color: var(--muted); font-size: 14px; }
+    #login-view {
+      height: 100%;
+      padding-top: var(--titlebar-h);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .login-card {
+      width: 420px;
+      background: linear-gradient(180deg, #0d1226, #090c19);
+      border: 1px solid #1b2544;
+      border-radius: 22px;
+      padding: 36px;
+      text-align: center;
+      box-shadow: 0 40px 90px -40px #2f7bff66, inset 0 1px 0 #ffffff08;
+    }
+    .login-card h1 { margin: 0 0 8px; font-size: 24px; letter-spacing: .01em; }
+    .login-card p { color: var(--muted); margin: 0 0 26px; line-height: 1.5; }
+    .login-card .btn { width: 100%; padding: 12px; }
+    .logo {
+      width: 104px; height: 104px; margin: 0 auto 20px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 0 44px -4px #2f7bff88;
+    }
+    .logo img { width: 100%; height: 100%; border-radius: 50%; display: block; }
+    #status { color: var(--danger); margin-top: 12px; font-size: 13px; min-height: 18px; }
+
+    /* ---------- Каркас ---------- */
+    #app {
+      display: grid;
+      grid-template-columns: 272px 1fr;
+      height: calc(100% - var(--titlebar-h) - var(--player-h));
+      margin-top: var(--titlebar-h);
+    }
+    .sidebar {
+      background: #070a16cc;
+      border-right: 1px solid #111a33;
+      display: flex; flex-direction: column;
+      min-height: 0;
+      backdrop-filter: blur(6px);
+    }
+    .sidebar-top { padding: 14px 14px 8px; }
+    .search-wrap { position: relative; }
+    .search-wrap .input { padding-left: 34px; }
+    .search-wrap::before {
+      content: "⌕";
+      position: absolute; left: 12px; top: 50%; transform: translateY(-52%);
+      color: var(--muted); font-size: 17px; pointer-events: none;
+    }
+    .nav { padding: 6px 8px; }
+    .nav-title {
+      padding: 14px 12px 6px;
+      color: var(--muted);
+      font-size: 11px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .09em;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .nav-item {
+      display: flex; align-items: center; gap: 10px;
+      width: 100%;
+      padding: 7px 10px;
+      border-radius: 9px;
+      text-align: left;
+      color: var(--text);
+      border: 1px solid transparent;
+    }
+    .nav-item:hover { background: var(--hover); }
+    .nav-item.active {
+      background: linear-gradient(90deg, #2f7bff26, #7b5cff14);
+      border-color: #2f7bff4d;
+      color: #fff;
+    }
+    .nav-item.active .nav-label { font-weight: 600; }
+    .nav-icon {
+      position: relative;
+      width: 36px; height: 36px; flex-shrink: 0;
+      border-radius: 7px;
+      background: var(--panel-2);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 16px; color: var(--muted); overflow: hidden;
+    }
+    .nav-icon img {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%; object-fit: cover;
+    }
+    .nav-text { min-width: 0; flex: 1; }
+    .nav-label, .nav-sub { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .nav-sub { color: var(--muted); font-size: 12px; }
+    #playlist-nav { flex: 1; overflow-y: auto; padding: 0 8px 12px; min-height: 0; }
+    .sidebar-bottom { border-top: 1px solid #111a33; padding: 10px; }
+    .account { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .account-avatar {
+      position: relative;
+      width: 38px; height: 38px; border-radius: 50%; flex-shrink: 0;
+      background: linear-gradient(135deg, #16204a, #2a1a52);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px; font-weight: 700; color: #cfd8f5;
+      overflow: hidden;
+      border: 1px solid #26345c;
+      box-shadow: 0 0 0 1px #2f7bff33;
+
+    }
+    .account-avatar img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    .account-text { min-width: 0; flex: 1; }
+    #account-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .account-sub { font-size: 11px; color: var(--muted); }
+    .icon-btn {
+      width: 32px; height: 32px; border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--muted);
+    }
+    .icon-btn:hover { background: var(--hover); color: var(--text); }
+
+    /* ---------- Контент ---------- */
+    .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+    .main-header {
+      display: flex; align-items: center; gap: 18px;
+      padding: 20px 28px 14px;
+    }
+    #view-cover {
+      position: relative;
+      width: 92px; height: 92px; flex-shrink: 0;
+      border-radius: 14px;
+      background: var(--panel-2);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 38px; color: var(--muted); overflow: hidden;
+      border: 1px solid #1c2749;
+      box-shadow: 0 10px 34px -18px #2f7bffaa;
+    }
+    #view-cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    .header-text { flex: 1; min-width: 0; }
+    .header-kind { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .1em; font-weight: 700; }
+    #view-title { margin: 4px 0; font-size: 26px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #view-sub { color: var(--muted); font-size: 13px; }
+    .header-actions { display: flex; gap: 8px; align-items: center; }
+    .header-actions .input { width: 200px; }
+    .btn-round {
+      width: 46px; height: 46px; border-radius: 50%;
+      background: linear-gradient(140deg, var(--accent), var(--violet));
+      color: #fff; font-size: 15px;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 10px 28px -10px #2f7bffcc;
+    }
+    .btn-round:hover { filter: brightness(1.12); }
+
+    .list-head, .track {
+      display: grid;
+      grid-template-columns: 40px 44px minmax(0, 1fr) 64px;
+      align-items: center;
+      gap: 12px;
+      padding: 0 28px;
+    }
+    .list-head {
+      color: var(--muted); font-size: 12px;
+      padding-top: 6px; padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+      text-transform: uppercase; letter-spacing: .06em; font-size: 10px; font-weight: 700;
+    }
+    #tracks-container { flex: 1; overflow-y: auto; padding: 6px 0 18px; min-height: 0; }
+    .track {
+      height: 58px;
+      cursor: pointer;
+      border-radius: 0;
+      position: relative;
+    }
+    .track:hover { background: #101528aa; }
+    .track.active {
+      background: linear-gradient(90deg, #2f7bff1f, #7b5cff0a 60%, transparent);
+      box-shadow: inset 2px 0 0 var(--accent);
+    }
+    .track.active .track-title { color: #8fb9ff; }
+    .track.unavailable { opacity: .4; cursor: default; }
+    .track-num { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; position: relative; }
+    .track.active .track-num { color: var(--accent); }
+    .track-num .num-play { display: none; }
+    .track:hover .track-num .num-index { display: none; }
+    .track:hover .track-num .num-play { display: inline; color: var(--text); font-size: 12px; }
+    .track-cover {
+      position: relative;
+      width: 44px; height: 44px; border-radius: 8px;
+      background: var(--panel-2);
+      display: flex; align-items: center; justify-content: center;
+      color: var(--muted); font-size: 16px; overflow: hidden;
+      border: 1px solid #17203a;
+    }
+    .track-cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    .track-cover:not(.has-cover) { color: #6b7699; }
+    .track-main { min-width: 0; }
+    .track-title, .track-artist { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .track-title { font-weight: 500; }
+    .track-artist { color: var(--muted); font-size: 13px; }
+    .track-dur { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+    .track-del {
+      position: absolute; right: 96px; top: 50%; transform: translateY(-50%);
+      width: 28px; height: 28px; border-radius: 8px;
+      display: none; align-items: center; justify-content: center;
+      color: var(--muted); font-size: 15px;
+    }
+    .track:hover .track-del { display: flex; }
+    .track-del:hover { background: #ff5c7a22; color: var(--danger); }
+    .placeholder { padding: 40px 28px; color: var(--muted); text-align: center; }
+    .placeholder.error { color: var(--danger); }
+    .placeholder .btn { margin-top: 16px; }
+    .load-more { display: block; margin: 14px auto; }
+
+    /* ---------- Плеер ---------- */
+    #bottom-bar {
+      position: fixed; left: 0; right: 0; bottom: 0;
+      height: var(--player-h);
+      background: #070a16f2;
+      border-top: 1px solid #121c38;
+      display: grid;
+      grid-template-columns: minmax(200px, 1fr) minmax(340px, 2fr) minmax(200px, 1fr);
+      align-items: center;
+      gap: 20px;
+      padding: 0 20px;
+      z-index: 50;
+    }
+    .now { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    #current-cover {
+      position: relative;
+      width: 54px; height: 54px; flex-shrink: 0;
+      border-radius: 10px;
+      background: linear-gradient(140deg, #0e1531, #1a1440);
+      display: flex; align-items: center; justify-content: center;
+      color: #3d4c78; font-size: 18px; overflow: hidden;
+      border: 1px solid #1b2544;
+    }
+    #current-cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    .now-text { min-width: 0; }
+    #current-title, #current-artist { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #current-title { font-weight: 600; }
+    #current-artist { color: var(--muted); font-size: 13px; }
+    .center { display: flex; flex-direction: column; gap: 6px; }
+    .controls { display: flex; justify-content: center; align-items: center; gap: 14px; }
+    .ctrl {
+      width: 34px; height: 34px; border-radius: 50%;
+      color: var(--muted); font-size: 16px;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .ctrl:hover { color: var(--text); background: var(--hover); }
+    .ctrl.on { color: var(--accent); }
+    #btn-play-pause {
+      width: 42px; height: 42px; border-radius: 50%;
+      background: linear-gradient(140deg, #eaf1ff, #bcd2ff);
+      color: #06112b; font-size: 15px;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 6px 20px -8px #8fb9ff;
+    }
+    #btn-play-pause:hover { transform: scale(1.06); }
+    .progress { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+    .progress span { width: 40px; }
+    .progress span:first-child { text-align: right; }
+    input[type="range"] { flex: 1; accent-color: var(--accent); cursor: pointer; height: 4px; }
+    .right { display: flex; justify-content: flex-end; align-items: center; gap: 6px; }
+    #volume-bar { flex: none; width: 100px; }
+    .eq-toggle {
+      height: 30px; padding: 0 10px; border-radius: 8px;
+      font-size: 12px; font-weight: 700; letter-spacing: .04em;
+      color: var(--muted); border: 1px solid var(--border);
+    }
+    .eq-toggle:hover { color: var(--text); background: var(--hover); }
+    .eq-toggle.on { color: #cfe0ff; border-color: #2f7bff66; background: #2f7bff1f; }
+
+    /* ---------- Эквалайзер ---------- */
+    #eq-panel {
+      position: fixed;
+      right: 16px;
+      bottom: calc(var(--player-h) + 12px);
+      width: 430px;
+      background: linear-gradient(180deg, #0c1124, #080b18);
+      border: 1px solid #1d2850;
+      border-radius: 16px;
+      padding: 16px 18px 14px;
+      box-shadow: 0 30px 70px -24px #000, 0 0 0 1px #2f7bff14, 0 0 40px -24px #7b5cff;
+      z-index: 60;
+    }
+    .eq-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+    .eq-head h3 { margin: 0; font-size: 14px; font-weight: 700; letter-spacing: .02em; }
+    .switch {
+      margin-left: auto;
+      width: 40px; height: 22px; border-radius: 11px;
+      background: #1a2140; position: relative; transition: background .15s;
+      border: 1px solid var(--border);
+    }
+    .switch::after {
+      content: ""; position: absolute; top: 2px; left: 2px;
+      width: 16px; height: 16px; border-radius: 50%;
+      background: #8b95b5; transition: transform .15s, background .15s;
+    }
+    .switch.on { background: linear-gradient(120deg, var(--accent), var(--violet)); border-color: transparent; }
+    .switch.on::after { transform: translateX(18px); background: #fff; }
+    .eq-presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+    .chip {
+      padding: 5px 10px; border-radius: 999px;
+      background: var(--panel-2); border: 1px solid var(--border);
+      color: var(--muted); font-size: 12px;
+    }
+    .chip:hover { color: var(--text); background: var(--hover); }
+    .chip.on { color: #fff; background: linear-gradient(120deg, #2f7bff33, #7b5cff33); border-color: #2f7bff66; }
+    .eq-bands { display: flex; justify-content: space-between; gap: 2px; }
+    .eq-band { width: 34px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+    .eq-slot { height: 104px; width: 34px; display: flex; align-items: center; justify-content: center; }
+    .eq-band input[type="range"] {
+      width: 100px; height: 4px; flex: none;
+      transform: rotate(-90deg);
+      accent-color: var(--violet);
+    }
+    .eq-val { font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .eq-freq { font-size: 10px; color: #6c7797; }
+    .eq-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
+    .eq-foot small { color: #6c7797; font-size: 11px; }
+    .eq-reset {
+      padding: 5px 10px; border-radius: 8px; font-size: 12px;
+      color: var(--muted); border: 1px solid var(--border);
+    }
+    .eq-reset:hover { color: var(--text); background: var(--hover); }
+    .eq-scale-row {
+      display: flex; align-items: center; gap: 10px;
+      margin-top: 8px; padding-top: 10px;
+      border-top: 1px solid #131c36;
+      font-size: 11px; color: #6c7797;
+    }
+    .eq-scale-row span { white-space: nowrap; }
+    .eq-scale-row input { flex: 1; accent-color: var(--accent); }
+
+    /* ---------- Тост ---------- */
+    #toast {
+      position: fixed; left: 50%; bottom: calc(var(--player-h) + 18px);
+      transform: translateX(-50%) translateY(10px);
+      background: #101733ee; border: 1px solid #26345c;
+      color: var(--text); padding: 10px 16px; border-radius: 10px;
+      font-size: 13px; opacity: 0; pointer-events: none;
+      transition: opacity .2s, transform .2s;
+      z-index: 70; max-width: 520px; text-align: center;
+      box-shadow: 0 20px 40px -20px #000;
+    }
+    #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+    ::-webkit-scrollbar { width: 10px; }
+    ::-webkit-scrollbar-thumb { background: #1e2846; border-radius: 5px; border: 2px solid transparent; background-clip: padding-box; }
+    ::-webkit-scrollbar-thumb:hover { background-color: #2b3863; }
+  </style>
+</head>
+<body>
+
+  <!-- Своя титульная панель вместо рамки Windows -->
+  <div id="titlebar">
+    <div class="tb-brand">
+      <img src="assets/icon.png" alt="">
+      <span>NK Player</span>
+      <small id="tb-sub"></small>
+    </div>
+    <div class="tb-spacer"></div>
+    <div class="tb-controls">
+      <button id="win-min" class="tb-btn" title="Свернуть" aria-label="Свернуть">
+        <svg width="10" height="10" viewBox="0 0 10 10"><path d="M0 5h10" stroke="currentColor" stroke-width="1.2"/></svg>
+      </button>
+      <button id="win-max" class="tb-btn" title="Развернуть" aria-label="Развернуть">
+        <svg width="10" height="10" viewBox="0 0 10 10"><rect x="0.6" y="0.6" width="8.8" height="8.8" fill="none" stroke="currentColor" stroke-width="1.2"/></svg>
+      </button>
+      <button id="win-close" class="tb-btn close" title="Закрыть" aria-label="Закрыть">
+        <svg width="10" height="10" viewBox="0 0 10 10"><path d="M0.5 0.5l9 9M9.5 0.5l-9 9" stroke="currentColor" stroke-width="1.2"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- Панель над встроенной страницей входа ВК -->
+  <div id="qr-cancel-bar" class="hidden">
+    <span>Отсканируйте QR-код приложением ВКонтакте</span>
+    <button id="btn-cancel-qr" class="btn-ghost">Закрыть</button>
+  </div>
+
+  <!-- Экран входа -->
+  <div id="login-view" class="hidden">
+    <div class="login-card">
+      <div class="logo" aria-hidden="true"><img src="assets/icon.png" alt=""></div>
+      <h1>NK Player</h1>
+      <p>Войдите через ВКонтакте: откроется страница входа с QR-кодом. Отсканируйте его в приложении ВК на телефоне.</p>
+      <button id="btn-oauth" class="btn">Войти через ВКонтакте</button>
+      <div id="status" role="alert"></div>
+    </div>
+  </div>
+
+  <!-- Основной интерфейс -->
+  <div id="app" class="hidden">
+    <aside class="sidebar">
+      <div class="sidebar-top">
+        <div class="search-wrap">
+          <input id="search-input" class="input" type="search" placeholder="Поиск музыки ВК" aria-label="Поиск музыки ВКонтакте" autocomplete="off">
+        </div>
+      </div>
+      <nav class="nav" aria-label="Разделы">
+        <button class="nav-item active" id="nav-my" data-view="my">
+          <span class="nav-icon" aria-hidden="true">♫</span>
+          <span class="nav-text"><span class="nav-label">Моя музыка</span><span class="nav-sub" id="nav-my-count"></span></span>
+        </button>
+        <button class="nav-item" id="nav-local" data-view="local">
+          <span class="nav-icon" aria-hidden="true">▤</span>
+          <span class="nav-text"><span class="nav-label">Загруженная музыка</span><span class="nav-sub" id="nav-local-count"></span></span>
+        </button>
+        <button class="nav-item hidden" id="nav-search" data-view="search">
+          <span class="nav-icon" aria-hidden="true">⌕</span>
+          <span class="nav-text"><span class="nav-label">Результаты поиска</span><span class="nav-sub" id="nav-search-q"></span></span>
+        </button>
+      </nav>
+      <div class="nav-title"><span>Плейлисты</span><span id="playlists-count"></span></div>
+      <div id="playlist-nav" aria-label="Плейлисты"></div>
+      <div class="sidebar-bottom">
+        <div class="account">
+          <div class="account-avatar" id="account-avatar" aria-hidden="true"></div>
+          <div class="account-text">
+            <div id="account-name">ВКонтакте</div>
+            <div class="account-sub" id="account-sub">аккаунт</div>
+          </div>
+          <button id="btn-logout" class="icon-btn" title="Выйти из аккаунта" aria-label="Выйти из аккаунта">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="main-header">
+        <div id="view-cover" aria-hidden="true">♫</div>
+        <div class="header-text">
+          <div class="header-kind" id="view-kind">Библиотека</div>
+          <h2 id="view-title">Моя музыка</h2>
+          <div id="view-sub"></div>
+        </div>
+        <div class="header-actions">
+          <input id="filter-input" class="input" type="search" placeholder="Фильтр в списке" aria-label="Фильтр по текущему списку" autocomplete="off">
+          <button id="btn-import" class="btn-ghost hidden" title="Добавить свои файлы">＋ Добавить</button>
+          <button id="btn-shuffle-play" class="btn-ghost" title="Перемешать и слушать">⤮ Перемешать</button>
+          <button id="btn-play-view" class="btn-round" title="Слушать" aria-label="Слушать список">▶</button>
+        </div>
+      </header>
+      <div class="list-head" aria-hidden="true">
+        <span style="text-align:right">#</span><span></span><span>Название</span><span style="text-align:right">⏱</span>
+      </div>
+      <div id="tracks-container" role="list"></div>
+    </main>
+  </div>
+
+  <!-- Нижний плеер -->
+  <div id="bottom-bar" class="hidden">
+    <div class="now">
+      <div id="current-cover"></div>
+      <div class="now-text">
+        <div id="current-title">Ничего не играет</div>
+        <div id="current-artist">Выберите трек</div>
+      </div>
+    </div>
+    <div class="center">
+      <div class="controls">
+        <button id="btn-shuffle" class="ctrl" title="Перемешивание" aria-label="Перемешивание" aria-pressed="false">⤮</button>
+        <button id="btn-prev" class="ctrl" title="Предыдущий" aria-label="Предыдущий трек">⏮</button>
+        <button id="btn-play-pause" title="Пауза / воспроизведение" aria-label="Воспроизведение">▶</button>
+        <button id="btn-next" class="ctrl" title="Следующий" aria-label="Следующий трек">⏭</button>
+        <button id="btn-repeat" class="ctrl" title="Повтор" aria-label="Повтор" aria-pressed="false">↻</button>
+      </div>
+      <div class="progress">
+        <span id="time-current">0:00</span>
+        <input type="range" id="seek-bar" value="0" min="0" max="1000" aria-label="Позиция трека">
+        <span id="time-total">0:00</span>
+      </div>
+    </div>
+    <div class="right">
+      <button id="btn-eq" class="eq-toggle" title="Эквалайзер" aria-expanded="false">EQ</button>
+      <button id="btn-mute" class="ctrl" title="Звук" aria-label="Выключить звук">🔊</button>
+      <input type="range" id="volume-bar" min="0" max="1" step="0.01" value="0.8" aria-label="Громкость">
+    </div>
+  </div>
+
+  <!-- Эквалайзер -->
+  <div id="eq-panel" class="hidden" role="dialog" aria-label="Эквалайзер">
+    <div class="eq-head">
+      <h3>Эквалайзер</h3>
+      <button id="eq-power" class="switch on" title="Включить / выключить" aria-pressed="true"></button>
+      <button id="eq-close" class="icon-btn" title="Закрыть" aria-label="Закрыть эквалайзер">✕</button>
+    </div>
+    <div class="eq-presets" id="eq-presets"></div>
+    <div class="eq-bands" id="eq-bands"></div>
+    <div class="eq-foot">
+      <small>Настройки сохраняются автоматически</small>
+      <button id="eq-reset" class="eq-reset">Сбросить</button>
+    </div>
+    <div class="eq-scale-row">
+      <span>Усиление</span>
+      <input type="range" id="eq-preamp" min="-12" max="6" step="1" value="0" aria-label="Усиление эквалайзера">
+      <span id="eq-preamp-val" class="eq-preamp-val">0 дБ</span>
+    </div>
+  </div>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <audio id="audio-player"></audio>
+  <script src="renderer.js"></script>
+</body>
+</html>

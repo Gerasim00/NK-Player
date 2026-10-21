@@ -1,0 +1,73 @@
+{
+  "name": "nk-player",
+  "productName": "NK Player",
+  "version": "1.2.0",
+  "description": "NK Player — музыкальный плеер для ВКонтакте",
+  "author": {
+    "name": "NK Player"
+  },
+  "license": "MIT",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-packager . \"NK Player\" --platform=win32 --arch=x64 --icon=assets/icon.ico --out=dist --overwrite --ignore=\"^/dist\" --ignore=\"^/node_modules/hls\\.js/src\"",
+    "installer": "electron-builder --win nsis --x64",
+    "build": "npm run installer"
+  },
+  "dependencies": {
+    "hls.js": "1.7.3"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "electron": "44.9.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "ru.nk.player",
+    "productName": "NK Player",
+    "copyright": "NK Player",
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "main.js",
+      "renderer.js",
+      "vk-audio.js",
+      "local-music.js",
+      "index.html",
+      "assets/icon.ico",
+      "assets/icon.png",
+      "package.json"
+    ],
+    "asar": true,
+    "compression": "maximum",
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "assets/icon.ico",
+      "artifactName": "NK-Player-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "NK Player",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "installerIcon": "assets/icon.ico",
+      "uninstallerIcon": "assets/icon.ico",
+      "installerHeaderIcon": "assets/icon.ico",
+      "artifactName": "NK-Player-Setup-${version}.${ext}",
+      "uninstallDisplayName": "NK Player ${version}",
+      "menuCategory": false
+    }
+  }
+}

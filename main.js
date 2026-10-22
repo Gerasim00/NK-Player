@@ -1,8 +1,10 @@
-const { app, BrowserWindow, WebContentsView, ipcMain, session, dialog, Menu } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, session, dialog, Menu, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const vk = require('./vk-audio');
 const localMusic = require('./local-music');
+const library = require('./library');
+const updates = require('./updates');
 const discord = require('./discord-rpc');
 
 const IS_DEV = !app.isPackaged;
@@ -29,6 +31,48 @@ function migrateOldProfile() {
 
 migrateOldProfile();
 app.setAppUserModelId('ru.nk.player');
+
+// ---------------------------------------------------------------- CDN ВК
+
+// Самозалитые треки лежат на отдельных серверах аудио-CDN ВК, которые
+// капризнее к входящим запросам, чем треки каталога. Вопросы с Electron
+// в User-Agent, без Referer и с Origin: file:///null приводят к тому, что
+// часть ссылок отдаётся медленно или не отдаётся, а hls.js вообще не может
+// забрать сегменты из окна file://. Делаем запросы к аудио-CDN такими же,
+// как у плеера на vk.ru, и раздаём CORS для hls.js.
+const VK_CDN_FILTERS = [
+  '*://*.vkuseraudio.net/*',
+  '*://*.userapi.com/*',
+  '*://*.vkuser.net/*',
+  '*://*.okcdn.ru/*',
+  '*://*.vk-me.ru/*'
+];
+
+function setupVkCdnHeaders() {
+  const ses = session.defaultSession;
+  // Аудио-CDN ВК — кладём заголовки плеера и CORS для hls.js
+
+  // Исходящие запросы к аудио-CDN — заголовки как у настоящего плеера
+  ses.webRequest.onBeforeSendHeaders({ urls: VK_CDN_FILTERS }, (details, callback) => {
+    const h = details.requestHeaders;
+    h.Referer = 'https://vk.ru/';
+    const ua = h['User-Agent'];
+    if (ua) h['User-Agent'] = ua
+      .replace(/\s*NK[_ -]?Player\/[\d.]+/gi, '')
+      .replace(/\s*Electron\/[\d.]+/i, '');
+    // okcdn отклоняет запросы с Origin: file:///null — убираем его совсем
+    delete h.Origin;
+    callback({ requestHeaders: h });
+  });
+
+  // CORS для hls.js: без этого XHR из окна file:// получит отказ на манифест
+  // и сегменты, даже если сам CDN отвечает нормально
+  ses.webRequest.onHeadersReceived({ urls: VK_CDN_FILTERS }, (details, callback) => {
+    const h = details.responseHeaders;
+    if (h) h['Access-Control-Allow-Origin'] = ['*'];
+    callback(h ? { responseHeaders: h } : {});
+  });
+}
 
 let mainWindow;
 let authView = null;
@@ -74,7 +118,9 @@ function setAuthViewBounds() {
 }
 
 app.whenReady().then(() => {
+  setupVkCdnHeaders();
   localMusic.init(app.getPath('userData'));
+  library.init(app.getPath('userData'));
   createWindow();
   discord.start();
 });
@@ -193,6 +239,54 @@ vkHandler('audio:resolve', (ses, arg) => {
   const req = Array.isArray(arg) ? { ids: arg } : (arg || {});
   const ids = Array.isArray(req.ids) ? req.ids.slice(0, 200) : [];
   return vk.resolveUrls(ses, ids, { background: !!req.background });
+});
+
+// Фоновый прогрев самозалитов: ВК конвертирует залитые файлы по первому
+// запросу сегмента (до 15-30 с), поэтому заранее дёргаем начало трека
+vkHandler('audio:warm', (ses, urls) =>
+  vk.warmSegments(ses, Array.isArray(urls) ? urls.slice(0, 60) : [])
+);
+
+// ---------------------------------------------------------------- Локальные плейлисты
+
+function libHandler(channel, fn) {
+  ipcMain.handle(channel, (event, ...args) => {
+    try {
+      return { success: true, data: fn(...args) };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  });
+}
+
+libHandler('lib:list', () => library.list());
+libHandler('lib:tracks', (id) => library.tracks(String(id || '')));
+libHandler('lib:create', (title) => library.create(title));
+libHandler('lib:rename', (id, title) => library.rename(String(id || ''), title));
+libHandler('lib:remove', (id) => library.remove(String(id || '')));
+libHandler('lib:addTrack', (id, track) => library.addTrack(String(id || ''), track));
+libHandler('lib:removeTrack', (id, trackId) => library.removeTrack(String(id || ''), String(trackId || '')));
+
+// ---------------------------------------------------------------- Версия и обновления
+
+ipcMain.handle('app:version', () => ({ success: true, data: app.getVersion() }));
+
+ipcMain.handle('update:check', async (e, arg) => {
+  try {
+    return { success: true, data: await updates.check({ force: !!(arg && arg.force) }) };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// Ссылки на релиз открываем в системном браузере, а не внутри приложения
+ipcMain.handle('app:openExternal', async (e, url) => {
+  const safe = String(url || '');
+  if (!/^https:\/\/(github\.com|api\.github\.com)\//.test(safe)) {
+    return { success: false, error: 'Недопустимая ссылка' };
+  }
+  await shell.openExternal(safe);
+  return { success: true };
 });
 
 // ---------------------------------------------------------------- Discord

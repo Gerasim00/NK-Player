@@ -194,8 +194,11 @@ async function getUserId(ses) {
 // ---------- Разбор ответов ----------
 
 // Часть треков ВК отдаёт не через reload_audio, а прямыми ссылками okcdn
-// в поле audio_streams объекта флагов [12]. mp3 надёжнее: он играет напрямую
-// через <audio> без CORS, тогда как okcdn отклоняет запросы с Origin: null.
+// в поле audio_streams объекта флагов [12] — именно их играет веб-плеер vk.ru.
+// Для самозалитов это часто единственный быстрый источник: расшифрованные
+// ссылки ведут на старые медленные cs*-хосты. Приоритет: mp3 (играет напрямую
+// через <audio>), затем aac, затем HLS-варианты (заголовки и CORS для CDN
+// поправлены в main.js, поэтому hls.js теперь тоже достаёт сегменты).
 // Ссылки живут до expires — протухшую отдавать бессмысленно.
 function pickStream(a) {
   let flags = {};
@@ -205,14 +208,15 @@ function pickStream(a) {
     return { url: '', expires: 0 };
   }
   const streams = Array.isArray(flags.audio_streams) ? flags.audio_streams : [];
-  const stream = streams.find((s) => s.type === 'mp3') || streams.find((s) => s.type === 'hls_ts');
-  if (!stream || typeof stream.url !== 'string' || !stream.url.startsWith('https://')) {
-    return { url: '', expires: 0 };
+  for (const type of ['mp3', 'aac', 'hls_ts', 'hls']) {
+    const stream = streams.find((s) => s.type === type);
+    if (!stream || typeof stream.url !== 'string' || !stream.url.startsWith('https://')) continue;
+    const m = stream.url.match(/[?&]expires=(\d+)/) || stream.url.match(/\/expires\/(\d+)/);
+    const expires = m ? Number(m[1]) : 0;
+    if (expires && expires < Date.now() + 60 * 1000) continue;
+    return { url: stream.url, expires };
   }
-  const m = stream.url.match(/[?&]expires=(\d+)/) || stream.url.match(/\/expires\/(\d+)/);
-  const expires = m ? Number(m[1]) : 0;
-  if (expires && expires < Date.now() + 60 * 1000) return { url: '', expires };
-  return { url: stream.url, expires };
+  return { url: '', expires: 0 };
 }
 
 // Трек в ответах ВК — массив: [id, owner_id, url, title, artist, duration, ..., hashes(13), covers(14), ...]
@@ -414,21 +418,26 @@ function cacheGet(id) {
   return hit.url;
 }
 
-// Возвращает { urls, rateLimited }. rateLimited — ВК отказал целиком, стоит повторить.
+// Возвращает { urls, streams, rateLimited }. rateLimited — ВК отказал целиком, стоит повторить.
 async function reloadBatch(ses, userId, ids) {
   const res = await alAudio(ses, { act: 'reload_audio', al: 1, ids: ids.join(',') });
   const tracks = res?.payload?.[1]?.[0];
   const urls = {};
-  if (!Array.isArray(tracks)) return { urls, rateLimited: true };
+  const streams = {};
+  if (!Array.isArray(tracks)) return { urls, streams, rateLimited: true };
   for (const t of tracks) {
-    const url = decodeVkAudioUrl(t[2], userId);
-    if (!url) continue;
     const id = `${t[1]}_${t[0]}`;
-    urls[id] = url;
-    const h = String(t[13] || '').split('/');
-    if (h[2] && h[5]) urlCache.set(`${id}_${h[2]}_${h[5]}`, { url, time: Date.now() });
+    const url = decodeVkAudioUrl(t[2], userId);
+    if (url) {
+      urls[id] = url;
+      const h = String(t[13] || '').split('/');
+      if (h[2] && h[5]) urlCache.set(`${id}_${h[2]}_${h[5]}`, { url, time: Date.now() });
+    }
+    // reload_audio заодно выдаёт свежие ссылки okcdn — обновляем их тоже
+    const stream = pickStream(t);
+    if (stream.url) streams[id] = stream;
   }
-  return { urls, rateLimited: false };
+  return { urls, streams, rateLimited: false };
 }
 
 // reload_audio отдаёт ссылки пачками до 10 треков.
@@ -437,6 +446,7 @@ async function reloadBatch(ses, userId, ids) {
 async function resolveUrls(ses, reloadIds, { background = false } = {}) {
   const userId = await getUserId(ses);
   const urls = {};
+  const streams = {};
   const missing = [];
 
   for (const id of new Set((reloadIds || []).filter(Boolean))) {
@@ -460,17 +470,18 @@ async function resolveUrls(ses, reloadIds, { background = false } = {}) {
     try {
       got = await enqueue(async () => {
         const first = await reloadBatch(ses, userId, chunk);
-        if (!first.rateLimited) return { urls: first.urls, limited: false };
+        if (!first.rateLimited) return { urls: first.urls, streams: first.streams, limited: false };
         // ВК ограничивает выдачу ссылок — одна короткая пауза, чтобы не тормозить плеер
         await sleep(3000);
         const second = await reloadBatch(ses, userId, chunk);
-        return { urls: second.urls, limited: second.rateLimited };
+        return { urls: second.urls, streams: second.streams, limited: second.rateLimited };
       });
     } finally {
       if (!background) playRequests--;
     }
 
     Object.assign(urls, got.urls);
+    if (got.streams) Object.assign(streams, got.streams);
     if (got.limited) {
       rateLimited = true;
       if (background) break;
@@ -482,7 +493,44 @@ async function resolveUrls(ses, reloadIds, { background = false } = {}) {
     const now = Date.now();
     for (const [k, v] of urlCache) if (now - v.time > URL_CACHE_TTL) urlCache.delete(k);
   }
-  return { urls, rateLimited };
+  return { urls, streams, rateLimited };
+}
+
+// ---------- Прогрев самозалитов ----------
+
+// Самозалитые треки ВК конвертирует в HLS по первому запросу: первый холодный
+// сегмент занимает 15-40 секунд (очередь транскода), повторный — миллисекунды.
+// Фоновая загрузка начала трека заставляет ВК подготовить сегменты заранее.
+async function warmSegments(ses, urls, { timeout = 45000 } = {}) {
+  let warmed = 0;
+  const details = [];
+  for (const url of urls) {
+    if (typeof url !== 'string' || !url.startsWith('https://')) continue;
+    try {
+      const res = await ses.fetch(url, { signal: AbortSignal.timeout(timeout) });
+      if (!res.ok) { details.push({ status: res.status }); continue; }
+      const text = await res.text();
+      if (!text.includes('#EXTM3U')) { details.push({ status: 'not-m3u8' }); continue; }
+      const base = url.split('/').slice(0, -1).join('/');
+      const segs = text.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#')).slice(0, 2);
+      // Сегменты ждём до готовности, стартовые байты — дёшево (<64 КБ),
+      // зато после этого ВК отдаёт их мгновенно в плеере
+      let segsOk = 0;
+      for (const s of segs) {
+        const segUrl = /^https?:/.test(s) ? s : `${base}/${s}`;
+        try {
+          const sr = await ses.fetch(segUrl, { headers: { Range: 'bytes=0-65535' }, signal: AbortSignal.timeout(timeout) });
+          if (sr.ok) segsOk++;
+          if (sr.body && sr.body.cancel) sr.body.cancel().catch(() => {});
+        } catch (e) { /* холодный сегмент не успел — прогреется в фоне или при нажатии */ }
+      }
+      warmed++;
+      details.push({ segsOk });
+    } catch (e) {
+      details.push({ err: String((e && e.message) || e).slice(0, 60) });
+    }
+  }
+  return { warmed, details };
 }
 
 module.exports = {
@@ -492,6 +540,7 @@ module.exports = {
   search,
   searchMore,
   resolveUrls,
+  warmSegments,
   resetSession,
   getProfile,
   decodeVkAudioUrl

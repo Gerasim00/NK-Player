@@ -32,6 +32,48 @@ function migrateOldProfile() {
 migrateOldProfile();
 app.setAppUserModelId('ru.nk.player');
 
+// ---------------------------------------------------------------- CDN ВК
+
+// Самозалитые треки лежат на отдельных серверах аудио-CDN ВК, которые
+// капризнее к входящим запросам, чем треки каталога. Вопросы с Electron
+// в User-Agent, без Referer и с Origin: file:///null приводят к тому, что
+// часть ссылок отдаётся медленно или не отдаётся, а hls.js вообще не может
+// забрать сегменты из окна file://. Делаем запросы к аудио-CDN такими же,
+// как у плеера на vk.ru, и раздаём CORS для hls.js.
+const VK_CDN_FILTERS = [
+  '*://*.vkuseraudio.net/*',
+  '*://*.userapi.com/*',
+  '*://*.vkuser.net/*',
+  '*://*.okcdn.ru/*',
+  '*://*.vk-me.ru/*'
+];
+
+function setupVkCdnHeaders() {
+  const ses = session.defaultSession;
+  // Аудио-CDN ВК — кладём заголовки плеера и CORS для hls.js
+
+  // Исходящие запросы к аудио-CDN — заголовки как у настоящего плеера
+  ses.webRequest.onBeforeSendHeaders({ urls: VK_CDN_FILTERS }, (details, callback) => {
+    const h = details.requestHeaders;
+    h.Referer = 'https://vk.ru/';
+    const ua = h['User-Agent'];
+    if (ua) h['User-Agent'] = ua
+      .replace(/\s*NK[_ -]?Player\/[\d.]+/gi, '')
+      .replace(/\s*Electron\/[\d.]+/i, '');
+    // okcdn отклоняет запросы с Origin: file:///null — убираем его совсем
+    delete h.Origin;
+    callback({ requestHeaders: h });
+  });
+
+  // CORS для hls.js: без этого XHR из окна file:// получит отказ на манифест
+  // и сегменты, даже если сам CDN отвечает нормально
+  ses.webRequest.onHeadersReceived({ urls: VK_CDN_FILTERS }, (details, callback) => {
+    const h = details.responseHeaders;
+    if (h) h['Access-Control-Allow-Origin'] = ['*'];
+    callback(h ? { responseHeaders: h } : {});
+  });
+}
+
 let mainWindow;
 let authView = null;
 
@@ -76,6 +118,7 @@ function setAuthViewBounds() {
 }
 
 app.whenReady().then(() => {
+  setupVkCdnHeaders();
   localMusic.init(app.getPath('userData'));
   library.init(app.getPath('userData'));
   createWindow();
@@ -197,6 +240,12 @@ vkHandler('audio:resolve', (ses, arg) => {
   const ids = Array.isArray(req.ids) ? req.ids.slice(0, 200) : [];
   return vk.resolveUrls(ses, ids, { background: !!req.background });
 });
+
+// Фоновый прогрев самозалитов: ВК конвертирует залитые файлы по первому
+// запросу сегмента (до 15-30 с), поэтому заранее дёргаем начало трека
+vkHandler('audio:warm', (ses, urls) =>
+  vk.warmSegments(ses, Array.isArray(urls) ? urls.slice(0, 60) : [])
+);
 
 // ---------------------------------------------------------------- Локальные плейлисты
 

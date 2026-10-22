@@ -26,6 +26,18 @@ const btnEq = $('btn-eq');
 
 // Ссылки ВК живут ограниченное время — перезапрашиваем, если старше этого срока
 const URL_TTL = 60 * 60 * 1000;
+// Сколько предстоящих треков сразу показывать в панели очереди
+const QUEUE_WINDOW = 50;
+
+// Сколько треков предстоят после играющего (при «повторе списка» — новый круг)
+function queueUpcoming() {
+  if (!state.order.length) return 0;
+  let upcoming = state.pos >= 0
+    ? state.order.length - (state.pos + 1)
+    : state.order.length;
+  if (upcoming <= 0 && state.repeat === 'all') upcoming = state.order.length;
+  return Math.max(0, upcoming);
+}
 
 const state = {
   profile: null,
@@ -76,13 +88,28 @@ let prefetchTimer = null;
 let prefetchRunning = false;
 let prefetchGen = 0;
 
+// Прогрев самозалитов: ВК конвертирует залитые файлы в HLS по первому запросу
+// сегмента (первый холодный — до 15-30 с). Тихо забираем начало трека заранее.
+// Настоящие самозалиты узнаём по отсутствию обложки, чтобы не греть весь каталог.
+const warmedTracks = new Set();
+let warmBudget = 400; // ~40 МБ трафика за сессию
+let warmChain = Promise.resolve();
+function warmUploads(items) {
+  const batch = items.filter((it) => it && it.id && it.url && !warmedTracks.has(it.id) && !it.cover && warmBudget > 0);
+  if (!batch.length) return;
+  batch.forEach((it) => { warmedTracks.add(it.id); warmBudget--; });
+  warmChain = warmChain
+    .then(() => vkCall('audio:warm', batch.map((it) => it.url)))
+    .catch(() => {});
+}
+
 function schedulePrefetch(list) {
   if (prefetchTimer) clearTimeout(prefetchTimer);
   prefetchGen++;
   const gen = prefetchGen;
   const pending = (list || [])
     .filter((t) => !t.local && t.reloadId && !t.url && !hasLiveStream(t))
-    .map((t) => t.reloadId);
+    .map((t) => ({ reloadId: t.reloadId, track: t }));
   if (!pending.length) return;
 
   prefetchTimer = setTimeout(async () => {
@@ -90,14 +117,18 @@ function schedulePrefetch(list) {
     if (prefetchRunning) return;
     prefetchRunning = true;
     try {
-      const queue = pending.slice();
-      while (queue.length && gen === prefetchGen) {
-        const chunk = queue.splice(0, 30);
-        const res = await vkCall('audio:resolve', { ids: chunk, background: true });
-        // Упёрлись в лимит ВК — прекращаем греть кэш, чтобы не отнимать
-        // квоту у воспроизведения. Ссылки всё равно запросятся при нажатии.
-        if (res && res.rateLimited) break;
-        await sleep(250);
+      // У ВК жёсткая квота на выдачу ссылок (~400 за окно, потом no_audios для
+      // всех запросов сразу), а списки давно отдают вообще без ссылок. Большие
+      // предзагрузки съедали квоту целиком из-за чего игрок останавливался на
+      // паре десятках треков. Поэтому предзагрузим только ОДИН чанк (30
+      // ближайших) на открытие экрана — остальное возьмёт по требованию
+      // ensureUrls при каждом переключении, он и самозалиты сразу греет.
+      const chunk = pending.slice(0, 30);
+      const res = await vkCall('audio:resolve', { ids: chunk.map((p) => p.reloadId), background: true });
+      // Упёрлись в лимит ВК — ссылок предзагрузке не досталось; воспроизведение
+      // важнее, а до нужных треков ссылки дойдут через ensureUrls.
+      if (res && !res.rateLimited && res.urls) {
+        warmUploads(chunk.filter((p) => res.urls[p.track.id]).map((p) => ({ id: p.track.id, url: res.urls[p.track.id], cover: p.track.cover })));
       }
     } catch (e) {
       // тихо: предзагрузка не критична
@@ -676,17 +707,21 @@ async function openView(view) {
       schedulePrefetch(view.tracks);
     } else if (view.type === 'queue') {
       setHeader({ kind: 'Воспроизведение', title: 'Очередь', sub: '', icon: '≡' });
-      const list = state.order.map((i) => state.queue[i]).filter(Boolean);
-      if (!list.length) {
+      if (!state.order.length) {
         showPlaceholder('Очередь пуста. Нажмите ▶ на любом треке или ≡, чтобы добавить его сюда.', false, {
           label: 'Перейти в «Мою музыку»',
           onClick: () => openView({ type: 'my' })
         });
         return;
       }
-      const left = state.pos >= 0 ? state.order.length - state.pos - 1 : list.length;
-      $('view-sub').textContent = `${pluralTracks(list.length)} · осталось ${left}`;
-      renderTracks();
+      if (!queueUpcoming()) {
+        showPlaceholder('Дальше треков нет. Добавьте ≡ или включите повтор списка.', false, {
+          label: 'Перейти в «Мою музыку»',
+          onClick: () => openView({ type: 'my' })
+        });
+        return;
+      }
+      renderTracks(); // он же обновит подзаголовок под текущее окно
     } else if (view.type === 'local-playlist') {
       const pl = view.playlist;
       setHeader({ kind: 'Свой плейлист', title: pl.title, sub: '', icon: '★' });
@@ -718,8 +753,21 @@ function currentViewTracks() {
   if (v.type === 'playlist') return state.playlistTracks.get(v.key) || [];
   if (v.type === 'search') return (state.search && state.search.tracks) || [];
   if (v.type === 'artist') return v.tracks || [];
-  // Очередь показываем в порядке воспроизведения, а не в порядке добавления
-  if (v.type === 'queue') return state.order.map((i) => state.queue[i]).filter(Boolean);
+  // Очередь показываем в порядке воспроизведения, но не целиком: только
+  // предстоящую часть — начиная со следующего за играющим трека, окном до
+  // QUEUE_WINDOW позиций. Обновляется на каждое переключение трека.
+  if (v.type === 'queue') {
+    if (!state.order.length) return [];
+    let start = state.pos >= 0 ? state.pos + 1 : 0;
+    if (start >= state.order.length) {
+      // Последний трек играет: при повторе списка очередь снова идёт с начала
+      if (state.repeat === 'all') start = 0;
+      else return [];
+    }
+    return state.order.slice(start, start + QUEUE_WINDOW)
+      .map((i) => state.queue[i])
+      .filter(Boolean);
+  }
   if (v.type === 'local-playlist') return state.localPlaylistTracks.get(v.id) || [];
   return [];
 }
@@ -1031,6 +1079,15 @@ function renderTracks() {
 
   tracksContainer.appendChild(frag);
   highlightCurrent();
+
+  // Подзаголовок очереди пересчитывается вместе с окном, а не только при входе
+  if (state.view.type === 'queue') {
+    const upcoming = queueUpcoming();
+    const shown = Math.min(upcoming, QUEUE_WINDOW);
+    const sub = [`осталось ${upcoming}`];
+    if (shown < upcoming) sub.push(`показаны первые ${QUEUE_WINDOW}`);
+    $('view-sub').textContent = sub.join(' · ');
+  }
 }
 
 function createTrackRow(track, idx) {
@@ -1239,10 +1296,12 @@ function activateTrack(index) {
   if (!track) return;
 
   // В экране очереди клик перескакивает по уже собранной очереди,
-  // а не пересобирает её заново из списка
+  // а не пересобирает её заново из списка. Показанное окно начинается
+  // с pos+1, поэтому настоящую позицию берём из карты orderOf.
   if (state.view.type === 'queue') {
-    const orderIndex = index;
-    const isSame = state.current && state.current.id === track.id && state.pos === orderIndex;
+    const orderIndex = state.orderOf && state.orderOf.get(track);
+    if (orderIndex == null) return;
+    const isSame = state.current && state.pos === orderIndex && (state.current.id === track.id);
     if (isSame) {
       togglePlay();
       return;
@@ -1280,11 +1339,32 @@ $('btn-play-view').addEventListener('click', () => {
     togglePlay();
     return;
   }
+  // В очереди ничего не пересобираем — просто продолжаем от следующего трека
+  if (state.view.type === 'queue') {
+    const target = state.pos + 1 < state.order.length ? state.pos + 1 : 0;
+    playAt(target);
+    return;
+  }
   startQueue(state.displayed, firstPlayable(state.displayed));
 });
 
 $('btn-shuffle-play').addEventListener('click', () => {
   if (!state.displayed.length) return;
+  // Перемешивание в панели очереди тасует уже собранную очередь на месте,
+  // а не собирает новую из показанного окна
+  if (state.view.type === 'queue') {
+    setShuffle(true);
+    if (state.queue.length) {
+      if (state.current) {
+        highlightCurrent();
+        renderTracks();
+      } else {
+        // Плеер стоит — просто перемешиваем существующую очередь и стартуем
+        startQueue(state.queue, null);
+      }
+    }
+    return;
+  }
   setShuffle(true);
   startQueue(state.displayed, null);
 });
@@ -1507,26 +1587,31 @@ function startQueue(list, startIndex) {
 
 // ---------------------------------------------------------------- Очередь: добавление
 
-// Счётчик в сайдбаре: он же показывает, что добавление сработало
+// Счётчик у «Очереди» в сайдбаре: равен окну предстоящих треков в панели
+// (с потолком QUEUE_WINDOW) и уменьшается по мере отыгрывания треков
 function updateQueueNav() {
   const el = $('nav-queue-count');
   if (!el) return;
-  el.textContent = state.order.length ? pluralTracks(state.order.length) : '';
+  const shown = Math.min(queueUpcoming(), QUEUE_WINDOW);
+  el.textContent = shown ? pluralTracks(shown) : '';
 }
 
 // Кладём копию трека: у одного и того же трека могут быть разные ссылки,
 // и объект из «Моей музыки» нельзя переиспользовать в очереди напрямую.
-function enqueueTrack(track, { next = false } = {}) {
+function enqueueTrack(track) {
   const item = { ...track };
   state.queue.push(item);
   const idx = state.queue.length - 1;
 
-  if (next && state.pos >= 0) {
+  // Новый трек встаёт в начало очереди — сразу после играющего
+  if (state.pos >= 0) {
     state.order.splice(state.pos + 1, 0, idx);
   } else {
     state.order.push(idx);
   }
   updateQueueNav();
+  // Открытая панель очереди сразу показывает новый состав
+  if (state.view.type === 'queue') renderTracks();
   return idx;
 }
 
@@ -1570,7 +1655,7 @@ function playNextInQueue(track) {
     startQueue([track], 0);
     return;
   }
-  enqueueTrack(track, { next: true });
+  enqueueTrack(track);
   toast(`«${track.title}» заиграет следующим`);
 }
 
@@ -1607,14 +1692,16 @@ function hasLiveStream(t) {
 }
 
 // Запрашивает ссылки для трека и нескольких следующих в очереди.
-// Прямые ссылки okcdn не требуют запроса к ВК — их используем первыми,
-// чтобы не тратить лимит reload_audio.
+// Прямая ссылка okcdn (audio_streams — та же, что у веб-плеера vk.ru) всегда
+// свежая и не тратит лимит reload_audio, поэтому берём её первой. Для
+// самозалитов это главный источник: расшифрованная ссылка почти всегда
+// ведёт на старый медленный cs*-хост.
 async function ensureUrls(pos, force) {
   const track = state.queue[state.order[pos]];
   if (!track) return '';
   if (track.local) return track.url;
-  if (!force && isFresh(track)) return track.url;
   if (hasLiveStream(track)) return track.stream;
+  if (!force && isFresh(track)) return track.url;
   if (!track.reloadId) return track.url || '';
 
   const batch = [track];
@@ -1624,10 +1711,12 @@ async function ensureUrls(pos, force) {
   }
 
   let urls = {};
+  let streams = {};
   let rateLimited = false;
   try {
     const res = await vkCall('audio:resolve', { ids: batch.map((t) => t.reloadId) });
     urls = res.urls || {};
+    streams = res.streams || {};
     rateLimited = !!res.rateLimited;
   } catch (e) {
     urls = {};
@@ -1638,11 +1727,19 @@ async function ensureUrls(pos, force) {
       t.url = urls[t.id];
       t.urlTime = now;
     }
+    if (streams[t.id]) {
+      t.stream = streams[t.id].url;
+      t.streamExpires = streams[t.id].expires;
+    }
   }
+  // Пока резолвим треки рядом с играющим — сразу греем их сегменты, иначе
+  // холодный самозалит при переходе будет тянуть сегмент 15-30 секунд
+  warmUploads(batch.map((t) => ({ id: t.id, url: t.url, cover: t.cover })));
+
+  // После обновления сначала пробуем свежую ссылку okcdn, старую — в запас
+  if (hasLiveStream(track)) return track.stream;
   const own = urls[track.id];
   if (own) return own;
-
-  if (hasLiveStream(track)) return track.stream;
   if (rateLimited) throw new Error('VK_RATE_LIMIT');
   return '';
 }
@@ -1657,6 +1754,9 @@ async function playAt(pos, { force = false, skipped = 0, waits = 0 } = {}) {
   if (!force) state.retried = false;
   updateNowPlaying();
   highlightCurrent();
+  updateQueueNav();
+  // Панель очереди показывает предстоящие треки — на новом треке окно сдвигается
+  if (state.view.type === 'queue') renderTracks();
 
   let url = '';
   let rateLimited = false;
@@ -1668,11 +1768,13 @@ async function playAt(pos, { force = false, skipped = 0, waits = 0 } = {}) {
   }
   if (token !== state.playToken) return;
 
-  if (!url && rateLimited && waits < 2) {
-    // ВК отдаёт ссылки порциями — подождём и попробуем ещё раз, а не будем
-    // пропускать трек. Так пользователь не теряет песню из-за внутреннего лимита.
+  if (!url && rateLimited && waits < 5) {
+    // ВК упирается в собственную квоту (~400 ссылок за окно, потом no_audios
+    // «через минуту»). Ждём нарастающими паузами и продолжаем сами: очередь
+    // должна сдвинуться, как только окно квоты откроется снова, — без
+    // перезапуска приложения и без участия пользователя.
     $('current-artist').textContent = 'Получаем ссылку…';
-    await sleep(waits === 0 ? 6000 : 15000);
+    await sleep([6000, 15000, 30000, 60000, 60000][waits]);
     if (token !== state.playToken) return;
     return playAt(pos, { force: true, skipped, waits: waits + 1 });
   }
@@ -1717,12 +1819,17 @@ function loadSource(url) {
   }
 }
 
-// Ссылка могла протухнуть — пробуем перезапросить один раз, иначе следующий трек
+// Ссылка могла протухнуть или okcdn-стрим не заиграл — сбрасываем источник и
+// перезапрашиваем один раз, иначе следующий трек
 function onPlaybackError() {
   if (!state.current) return;
   if (state.current.local) return;
   if (!state.retried) {
     state.retried = true;
+    // Стрим не сыгрался: сбрасываем кеш ссылок, чтобы force-запрос выдал новые
+    state.current.stream = '';
+    state.current.streamExpires = 0;
+    state.current.urlTime = 0;
     playAt(state.pos, { force: true });
     return;
   }

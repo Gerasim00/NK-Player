@@ -884,11 +884,12 @@ const HOLO = {
 };
 
 // Цветовые таблицы по корзинам яркости: без строковых склеек в кадре
-const HOLO_COLD = [], HOLO_HOT = [];
+const HOLO_COLD = [], HOLO_HOT = [], HOLO_SPARK = [];
 for (let i = 0; i < 20; i++) {
   const a = (i / 19).toFixed(3);
   HOLO_COLD.push(`rgba(86,146,255,${a})`);
   HOLO_HOT.push(`rgba(168,222,255,${a})`);
+  HOLO_SPARK.push(`rgba(225,245,255,${a})`);
 }
 
 // Фото-маска кота: вырезана из референса скриптом (порог яркости + морфология,
@@ -968,6 +969,20 @@ function drawHoloFace(ctx, t) {
     ctx.fillStyle = 'rgba(228,248,255,.95)';
     ctx.beginPath(); ctx.ellipse(ex, ey, 5.4, 2.6, 0, 0, 6.2832); ctx.fill();
   }
+  // Нос: малый треугольный блик (координаты от генерата, под новую маску)
+  const nn = 0.8 + 0.2 * Math.sin(t * 1.1);
+  const nx = 216, ny = 141;
+  const g2 = ctx.createRadialGradient(nx, ny, 0, nx, ny, 12);
+  g2.addColorStop(0, `rgba(210,240,255,${0.50 * nn})`);
+  g2.addColorStop(1, 'rgba(210,240,255,0)');
+  ctx.fillStyle = g2;
+  ctx.beginPath(); ctx.ellipse(nx, ny, 12, 9, 0, 0, 6.2832); ctx.fill();
+  ctx.fillStyle = 'rgba(228,248,255,.85)';
+  ctx.beginPath();
+  ctx.moveTo(nx - 3.2, ny - 1.6);
+  ctx.lineTo(nx + 3.2, ny - 1.6);
+  ctx.lineTo(nx, ny + 2.6);
+  ctx.closePath(); ctx.fill();
   ctx.restore();
 }
 
@@ -979,7 +994,7 @@ function holoSample() {
   const off = document.createElement('canvas');
   off.width = 420; off.height = 520;
   const octx = off.getContext('2d', { willReadFrequently: true });
-  let aAt;
+  let aAt, lumAt;
   if (HOLO.mask) {
     octx.drawImage(HOLO.mask, 0, 0, 420, 520);
     octx.globalAlpha = 0.42;
@@ -987,6 +1002,7 @@ function holoSample() {
     octx.globalAlpha = 1;
     const img = octx.getImageData(0, 0, 420, 520).data;
     aAt = (x, y) => img[(y * 420 + x) * 4 + 3];
+    lumAt = (x, y) => img[(y * 420 + x) * 4]; // R = запечённая яркость генерата
   } else {
     const pathEl = $('home-cat-body');
     if (!pathEl) return [];
@@ -1001,6 +1017,7 @@ function holoSample() {
     octx.globalAlpha = 1;
     const img = octx.getImageData(0, 0, 420, 520).data;
     aAt = (x, y) => img[(y * 420 + x) * 4 + 3];
+    lumAt = null; // векторный fallback: без канала яркости
   }
 
   const all = [];
@@ -1016,26 +1033,43 @@ function holoSample() {
       const grad = Math.abs(aAt(Math.min(417, x + 3), y) - aAt(Math.max(2, x - 3), y)) +
         Math.abs(aAt(x, Math.min(517, y + 3)) - aAt(x, Math.max(2, y - 3)));
       e = Math.max(e, Math.min(1, grad / 340));
-      const rg = 8 + Math.random() * 30; // окно внутреннего течения
+      // Слои анатомии: 0 — тело (мягкая дымка), 1 — контур/шерсть (край и
+      // прожилки brighter), 2 — искры (глаза, нос, усы, подушечки лап).
+      // Яркость исходника запечена в R-канал маски (см. make-cat-sil2.js)
+      const l = lumAt ? lumAt(x, y) : 0;
+      const ly = l >= 215 ? 2 : (e >= 0.55 ? 1 : 0);
+      const rg = ly === 2 ? 2 + Math.random() * 7 :
+        ly === 1 ? 5 + Math.random() * 15 : 8 + Math.random() * 30;
+      const v = ly === 2 ? 0.05 + Math.random() * 0.13 :
+        ly === 1 ? 0.10 + Math.random() * 0.20 : 0.16 + Math.random() * 0.36;
+      const s = ly === 2 ? 1.9 + Math.random() * 1.4 :
+        (e > 0.5 ? 1.5 : 1) + Math.random() * 1.1;
       all.push({
-        x, y, e,
+        x, y, e, ly,
         f: 0.5 + Math.random() * 1.1,
         ph: Math.random() * 6.283,
-        v: 0.16 + Math.random() * 0.36,
+        v,
         rg, o: Math.random() * rg,
-        s: (e > 0.5 ? 1.5 : 1) + Math.random() * 1.1
+        s
       });
     }
   }
-  // Прореживание: ~6400 частиц — плотность, при которой силуэт читается
-  const TARGET = 6400;
-  if (all.length > TARGET) {
-    const stride = all.length / TARGET;
-    const out = new Array(TARGET);
-    for (let i = 0; i < TARGET; i++) out[i] = all[(i * stride) | 0];
-    return out;
+  // Квоты слоёв: тело ~4700, контур ~2700, искры ~950 — кадр остаётся
+  // дешёвым, а каждая часть анатомии читается
+  const QUOTA = [4700, 2700, 950];
+  const pools = [[], [], []];
+  for (let i = 0; i < all.length; i++) pools[all[i].ly].push(all[i]);
+  const out = [];
+  for (let ly = 0; ly < 3; ly++) {
+    const pool = pools[ly];
+    if (pool.length > QUOTA[ly]) {
+      const stride = pool.length / QUOTA[ly];
+      for (let i = 0; i < QUOTA[ly]; i++) out.push(pool[(i * stride) | 0]);
+    } else {
+      for (let i = 0; i < pool.length; i++) out.push(pool[i]);
+    }
   }
-  return all;
+  return out;
 }
 
 function holoResize() {
@@ -1093,18 +1127,39 @@ function holoFrame(now) {
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i];
     // Живое течение ВНУТРИ силуэта: частица плывёт вверх в узком окне вокруг
-    // своей точки (8–38px) и возвращается — форма кота не размывается.
-    // (Раньше дрейф шёл по всем 520px и силуэт превращался в туман.)
+    // своей точки — форма кота не размывается
     const y = p.y - p.rg / 2 + ((t * 12 * p.v + p.o) % p.rg);
     const x = p.x + Math.sin(t * p.f * 1.6 + p.ph) * 1.9 +
       (gl && y > gl.y && y < gl.y + gl.h ? gl.dx : 0);
-    let a = (0.10 + p.e * 0.40) * pulse;
-    if (Math.random() < 0.06) a += Math.random() * 0.22; // точечные искры
     const ds = Math.abs(y - scan);
-    if (ds < 26) a += (1 - ds / 26) * 0.22;
-    if (a > 1) a = 1;
-    ctx.fillStyle = (p.e > 0.55 ? HOLO_HOT : HOLO_COLD)[(a * 19) | 0];
-    ctx.fillRect(x, y, p.s, p.s);
+    const scanGlow = ds < 26 ? (1 - ds / 26) : 0;
+
+    if (p.ly === 2) {
+      // Искры (глаза/нос/усы/подушечки): почти не текут, дышат, вспыхивают
+      const tw = 0.55 + 0.45 * Math.sin(t * 2.1 + p.ph * 3.7);
+      ctx.fillStyle = HOLO_COLD[(0.30 * tw * pulse * 19) | 0];
+      ctx.fillRect(x - p.s * 1.3, y - p.s * 1.3, p.s * 2.6, p.s * 2.6); // гало
+      let a = 0.55 * tw * pulse + scanGlow * 0.2;
+      if (a > 1) a = 1;
+      ctx.fillStyle = HOLO_SPARK[(a * 19) | 0];
+      ctx.fillRect(x, y, p.s, p.s);
+    } else if (p.ly === 1) {
+      // Контур и прожилки шерсти: яркие, живые
+      let a = (0.14 + p.e * 0.42) * pulse;
+      if (Math.random() < 0.05) a += Math.random() * 0.22;
+      a += scanGlow * 0.22;
+      if (a > 1) a = 1;
+      ctx.fillStyle = HOLO_HOT[(a * 19) | 0];
+      ctx.fillRect(x, y, p.s, p.s);
+    } else {
+      // Тело: мягкая дымка, держит объём
+      let a = (0.08 + p.e * 0.24) * pulse;
+      if (Math.random() < 0.05) a += Math.random() * 0.18;
+      a += scanGlow * 0.16;
+      if (a > 1) a = 1;
+      ctx.fillStyle = HOLO_COLD[(a * 19) | 0];
+      ctx.fillRect(x, y, p.s, p.s);
+    }
   }
 
   // Глаза и усы — поверх частиц (векторная морда уже погашена маской)

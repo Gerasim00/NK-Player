@@ -2549,7 +2549,13 @@ function nextPos() {
 }
 
 function playNext() {
-  const next = nextPos();
+  let next = nextPos();
+  // Умный режим безграничен: упёрлись в конец очереди (докрутили или скипами) —
+  // добираем продолжение и играем дальше
+  if (next === -1 && state.smart) {
+    smartExtendQueue();
+    next = nextPos();
+  }
   if (next !== -1) playAt(next);
 }
 
@@ -2586,9 +2592,7 @@ audio.addEventListener('ended', () => {
     smartOpenSession(state.current); // сессия повторного прослушивания продолжается
     return;
   }
-  // Умный режим: очередь кончилась — нарастить ещё одной порцией подборки
-  if (state.smart && nextPos() === -1) smartExtendQueue();
-  playNext();
+  playNext(); // умный режим добирает продолжение сам (см. playNext)
 });
 
 function togglePlay() {
@@ -3678,8 +3682,13 @@ function smartStatsSave() {
   }, 1500);
 }
 
+// Ключ трека: нормализуем артиста как sameArtist (feat./ft./&/запятая),
+// иначе одна песня под разными вариантами имени считается разными треками
+// — и вылезает «по кругу через один»
 function nameKey(t) {
-  return `${normalizeArtist(t.artist)}\u0000${String(t.title || '').toLowerCase().trim()}`;
+  const a = normalizeArtist(t.artist);
+  const cut = a.split(' feat')[0].split(' ft ')[0].split(' & ')[0].split(',')[0].trim();
+  return `${cut}\u0000${String(t.title || '').toLowerCase().trim()}`;
 }
 function prefKey(x) { return `${normalizeArtist(x.artist)}\u0000${String(x.title || '').toLowerCase().trim()}`; }
 
@@ -3734,6 +3743,7 @@ function smartTodBucket() {
 
 // --- Сессии прослушивания: закрытие при переходе на следующий трек/конце ---
 let smartSession = null;
+let smartPlayed = new Set(); // ключи отыгранных в этой сессии умного режима треков
 
 function smartOpenSession(track) {
   smartSession = track ? {
@@ -3763,6 +3773,9 @@ function smartFinishSession(ended) {
     tr.s += 1;
     if (ar) ar.s += 1;
   }
+  // Трек отыгран (полностью или частично) — сессия умного режима его не
+  // переподбирает, пока не начнётся новая
+  smartPlayed.add(s.k);
   smartStatsSave();
 }
 
@@ -3804,19 +3817,22 @@ function smartScore(t, now, bucket) {
   return sc + Math.random() * 0.55; // лёгкий джиттер против монотонных повторов
 }
 
-// --- Пул доступных треков (минус дизлайки и исключённые артисты) ---
+// --- Пул доступных треков (минус дизлайки и исключённые артисты).
+// Дубли ВК (одна песня под разными id) чистим всегда по ключу «артист+название»
 function smartPool(excludeKeys) {
   const src = (state.myTracks && state.myTracks.length) ? state.myTracks : (state.localTracks || []);
-  return src.filter((t) => {
-    if (!(t.local || t.url || t.stream || t.reloadId)) return false;
-    if (smartHiddenArtist(t) || smartFav(t) === -1) return false;
-    if (excludeKeys) {
-      const k = nameKey(t);
-      if (excludeKeys.has(k)) return false;
-      excludeKeys.add(k);
-    }
-    return true;
-  });
+  const seen = new Set();
+  const out = [];
+  for (const t of src) {
+    if (!(t.local || t.url || t.stream || t.reloadId)) continue;
+    if (smartHiddenArtist(t) || smartFav(t) === -1) continue;
+    const k = nameKey(t);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    if (excludeKeys && excludeKeys.has(k)) continue;
+    out.push(t);
+  }
+  return out;
 }
 
 // --- Сборка умной очереди ---
@@ -3897,6 +3913,8 @@ async function startSmartQueue(seed) {
   if (!state.myTracks || !state.myTracks.length) {
     try { await loadLocalTracks(); } catch (e) { state.localTracks = null; }
   }
+  // Новая сессия подбора отыгранные треки снова допускает в ротацию
+  smartPlayed = new Set();
   const list = smartBuildQueue(seed, null);
   if (!list.length) {
     toast('Для умного режима нужна библиотека — войдите в ВК или добавьте свои файлы');
@@ -3905,9 +3923,9 @@ async function startSmartQueue(seed) {
 
   const cold = !smart.artists.length && !Object.keys(smartStats.tr).length;
   smartSession = null;
-  state.smart = true;
   startQueue(list, 0);
   state.smart = true; // startQueue сбрасывает smart — ставим после него
+  console.log('[smart] пул: ' + smartPool(null).length + ', очередь: ' + list.length);
   toast(cold
     ? 'Умный режим: смешал библиотеку — отметьте любимых артистов в настройках'
     : 'Умный режим включён');
@@ -3915,13 +3933,46 @@ async function startSmartQueue(seed) {
   return true;
 }
 
-// Очередь кончилась — наростить ещё порцию (без повторов уже спланированного)
+// Очередь кончилась (докрутили до конца или скипами) — нарастить продолжение.
+// Исключаем отыгранное за эту сессию и ещё не отыгранную часть очереди:
+// повторы возможны только после того, как пул исчерпан
 function smartExtendQueue() {
-  const excludeKeys = new Set(state.queue.map((t) => nameKey(t)));
-  const list = smartBuildQueue(null, excludeKeys);
+  // Не переподбираем отыгранное в этой сессии и ещё не отыгранную часть очереди
+  const excludeKeys = new Set(smartPlayed);
+  for (let i = state.pos + 1; i < state.order.length; i++) {
+    const t = state.queue[state.order[i]];
+    if (t) excludeKeys.add(nameKey(t));
+  }
+  let list = smartBuildQueue(null, excludeKeys);
+  let rotated = false;
+
+  if (!list.length) {
+    // Пул этой сессии исчерпан — режим бесконечный: начинаем новый круг.
+    // Сразу не повторяем только то, что игралось в последние ~2 кулдауна
+    const nowMs = Date.now();
+    const windowMs = (SMART_CD[smart.knobs.cooldown] || 9e5) * 2;
+    const soft = new Set();
+    for (const k of smartPlayed) {
+      const st = smartStats.tr[k];
+      if (st && st.ts && nowMs - st.ts < windowMs) soft.add(k);
+    }
+    list = smartBuildQueue(null, soft);
+    rotated = true;
+  }
+  if (!list.length) {
+    // Совсем маленькая библиотека — честный круг без exclusions
+    list = smartBuildQueue(null, null);
+    rotated = true;
+  }
   if (!list.length) {
     state.smart = false;
+    toast('Умный режим: в библиотеке нет доступных треков');
     return;
+  }
+  if (rotated) {
+    // Новый круг — учёт отыгранного обнуляем, иначе замкнёмся
+    smartPlayed = new Set();
+    toast('Умный режим: круг прошёл — начинаю заново');
   }
   const base = state.queue.length;
   for (const t of list) {
@@ -3930,7 +3981,7 @@ function smartExtendQueue() {
   }
   updateQueueNav();
   if (state.view.type === 'queue') renderTracks();
-  toast('Умный режим: подобрал продолжение');
+  if (!rotated) toast('Умный режим: подобрал продолжение');
 }
 
 // --- Настройки умного режима ---
@@ -4059,7 +4110,7 @@ function smartRenderTracksTab() {
     for (const t of src) {
       if (rows.length >= 60) break;
       if (!`${t.artist} ${t.title}`.toLowerCase().includes(q)) continue;
-      const k = normalizeArtist(t.artist) + '\u0000' + String(t.title || '').toLowerCase().trim();
+      const k = nameKey(t);
       if (seen.has(k)) continue;
       seen.add(k);
       rows.push(t);
@@ -4068,7 +4119,7 @@ function smartRenderTracksTab() {
   } else {
     for (const t of src) {
       if (smartFav(t) !== 1) continue;
-      const k = normalizeArtist(t.artist) + '\u0000' + String(t.title || '').toLowerCase().trim();
+      const k = nameKey(t);
       if (seen.has(k)) continue;
       seen.add(k);
       rows.push(t);
@@ -4205,7 +4256,9 @@ function smartRenderKnobs() {
 
   let plays = 0, skips = 0;
   for (const k in smartStats.tr) { plays += smartStats.tr[k].p; skips += smartStats.tr[k].s; }
-  $('smart-stats-info').textContent = `Прослушиваний: ${plays} · Скипов: ${skips}`;
+  const poolN = smartPool(null).length;
+  $('smart-stats-info').textContent =
+    `Прослушиваний: ${plays} · Скипов: ${skips} · Пул: ${poolN}`;
 }
 
 $('s-explore').addEventListener('input', (e) => {

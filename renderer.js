@@ -1051,10 +1051,6 @@ function holoSample() {
         if (Math.random() > keep) continue;
       }
       const ly = l >= 215 ? 2 : (e >= 0.5 ? 1 : 0);
-      // Ориентация: градиент яркости перпендикулярен пряди (градиент по X —
-      // прядь вертикальная = dash 2; по Y — горизонтальная = dash 1)
-      const dash = (Math.abs(glx) === 0 && Math.abs(gly) === 0) ? 0 :
-        (Math.abs(glx) > Math.abs(gly) ? 2 : 1);
       const rg = ly === 2 ? 2 + Math.random() * 7 :
         ly === 1 ? 5 + Math.random() * 15 : 8 + Math.random() * 30;
       const v = ly === 2 ? 0.05 + Math.random() * 0.13 :
@@ -1062,8 +1058,7 @@ function holoSample() {
       const s = ly === 2 ? 1.9 + Math.random() * 1.4 :
         (e > 0.5 ? 1.5 : 1) + Math.random() * 1.1;
       all.push({
-        x: x * 0.5, y: y * 0.5, e, ly, l, dash,
-        len: 2.4 + Math.random() * 2.6,
+        x: x * 0.5, y: y * 0.5, e, ly, l,
         f: 0.5 + Math.random() * 1.1,
         ph: Math.random() * 6.283,
         v,
@@ -1161,27 +1156,22 @@ function holoFrame(now) {
       ctx.fillStyle = HOLO_SPARK[(a * 19) | 0];
       ctx.fillRect(x, y, p.s, p.s);
     } else if (p.ly === 1) {
-      // Пряди шерсти: чёрточки вдоль локального направления (лапы, грудь,
-      // хвост идут текстурой, а не случайной пылью)
+      // Контур и прожилки шерсти: яркие, живые
       let a = (0.12 + p.e * 0.40) * pulse;
       if (Math.random() < 0.05) a += Math.random() * 0.22;
       a += scanGlow * 0.22;
       if (a > 1) a = 1;
       ctx.fillStyle = HOLO_HOT[(a * 19) | 0];
-      if (p.dash === 1) ctx.fillRect(x - p.len * 0.5, y - p.s * 0.3, p.len, p.s * 0.6);
-      else if (p.dash === 2) ctx.fillRect(x - p.s * 0.3, y - p.len * 0.5, p.s * 0.6, p.len);
-      else ctx.fillRect(x, y, p.s, p.s);
+      ctx.fillRect(x, y, p.s, p.s);
     } else {
-      // Тело: дымка в тоне генерата + часть точек тянется в штрихи —
-      // светлые пряди ярче, тёмные провалы (между лапами) темнее
+      // Тело: дымка в тоне генерата — светлые пряди ярче, тёмные провалы
+      // (между лапами, под грудью) темнее → анатомия читается изнутри
       let a = (0.05 + (p.l / 255) * 0.34) * pulse;
       if (Math.random() < 0.05) a += Math.random() * 0.18;
       a += scanGlow * 0.16;
       if (a > 1) a = 1;
       ctx.fillStyle = HOLO_COLD[(a * 19) | 0];
-      if (p.dash === 1) ctx.fillRect(x - p.len * 0.5, y - p.s * 0.3, p.len, p.s * 0.6);
-      else if (p.dash === 2) ctx.fillRect(x - p.s * 0.3, y - p.len * 0.5, p.s * 0.6, p.len);
-      else ctx.fillRect(x, y, p.s, p.s);
+      ctx.fillRect(x, y, p.s, p.s);
     }
   }
 

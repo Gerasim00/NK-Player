@@ -1050,7 +1050,6 @@ function holoSample() {
         const keep = Math.min(1, 0.16 + l / 200);
         if (Math.random() > keep) continue;
       }
-      const ly = l >= 215 ? 2 : (e >= 0.5 ? 1 : 0);
       // Особенные детали (прямоугольники в координатах 420×520 под текущий
       // генерат): передние лапы, уши, хвост с завитком. Приоритет: лапы → уши → хвост
       const ux = x * 0.5, uy = y * 0.5;
@@ -1058,6 +1057,9 @@ function holoSample() {
       if (ux >= 140 && ux <= 242 && uy >= 402 && uy <= 474) z = 1; // передние лапы
       else if ((ux >= 143 && ux <= 197 || ux >= 220 && ux <= 274) && uy <= 128) z = 2; // уши
       else if (uy >= 425 && ux >= 95 && ux <= 312 || uy >= 380 && ux > 255 && ux <= 312) z = 3; // хвост
+      // В лапах и хвосте структурированную текстуру тела поднимаем в контур —
+      // детали читаются гуще; уши не уплотняем (перебор)
+      const ly = l >= 215 ? 2 : (e >= (z === 1 || z === 3 ? 0.3 : 0.5) ? 1 : 0);
       const rg = ly === 2 ? 2 + Math.random() * 7 :
         ly === 1 ? 5 + Math.random() * 15 : 8 + Math.random() * 30;
       const v = ly === 2 ? 0.05 + Math.random() * 0.13 :
@@ -1154,29 +1156,35 @@ function holoFrame(now) {
     const scanGlow = ds < 26 ? (1 - ds / 26) : 0;
 
     if (p.ly === 2) {
-      // Искры (глаза/нос/усы/подушечки): почти не текут, дышат, вспыхивают
+      // Искры (глаза/нос/усы/подушечки): почти не текут, дышат, вспыхивают.
+      // В ушах искры вполсилы — там хватит контура
       const tw = 0.55 + 0.45 * Math.sin(t * 2.1 + p.ph * 3.7);
-      ctx.fillStyle = HOLO_COLD[(0.38 * tw * pulse * 19) | 0];
+      const ez = p.z === 2 ? 0.5 : 1;
+      ctx.fillStyle = HOLO_COLD[(0.38 * ez * tw * pulse * 19) | 0];
       ctx.fillRect(x - p.s * 1.3, y - p.s * 1.3, p.s * 2.6, p.s * 2.6); // гало
-      let a = 0.72 * tw * pulse + scanGlow * 0.2;
+      let a = (0.72 * ez) * tw * pulse + scanGlow * 0.2;
       if (a > 1) a = 1;
       ctx.fillStyle = HOLO_SPARK[(a * 19) | 0];
       ctx.fillRect(x, y, p.s, p.s);
     } else if (p.ly === 1) {
-      // Контур: детали (уши/лапы/хвост) поддержаны ярче, остальной контур
-      // притушен — тело читается спокойным, детали — акцентами
-      const dz = p.z;
-      let a = (0.12 + p.e * 0.40) * pulse * (dz ? 1.1 : 0.55);
-      if (Math.random() < (dz ? 0.05 : 0.03)) a += Math.random() * 0.20;
-      a += scanGlow * (dz ? 0.28 : 0.12);
+      // Контур: лапы и хвост — главные акценты (ярче, крупнее), уши —
+      // вполсилы, прочий контур — мягкая подсветка силуэта
+      const az = p.z === 1 || p.z === 3;
+      const f = az ? 1.45 : p.z === 2 ? 0.85 : 0.5;
+      let a = (0.12 + p.e * 0.40) * pulse * f;
+      if (Math.random() < (az ? 0.08 : 0.03)) a += Math.random() * 0.22;
+      a += scanGlow * (az ? 0.35 : 0.12);
       if (a > 1) a = 1;
       ctx.fillStyle = HOLO_HOT[(a * 19) | 0];
-      ctx.fillRect(x, y, p.s, p.s);
+      const sm = az ? 1.3 : 1;
+      ctx.fillRect(x, y, p.s * sm, p.s * sm);
     } else {
-      // Тело: спокойная ровная дымка без вспышек
-      let a = (0.045 + (p.l / 255) * 0.26) * pulse;
+      // Тело: спокойная ровная дымка без вспышек; в лапах и хвосте чуть
+      // плотнее, чтобы форма деталей читалась и из тела
+      const az = p.z === 1 || p.z === 3;
+      let a = ((az ? 0.07 : 0.045) + (p.l / 255) * (az ? 0.34 : 0.26)) * pulse;
       if (Math.random() < 0.04) a += Math.random() * 0.10;
-      a += scanGlow * 0.10;
+      a += scanGlow * (az ? 0.14 : 0.10);
       if (a > 1) a = 1;
       ctx.fillStyle = HOLO_COLD[(a * 19) | 0];
       ctx.fillRect(x, y, p.s, p.s);

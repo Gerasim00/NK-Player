@@ -627,6 +627,8 @@
     }
     .cat-aura { animation: homeAura 4.5s ease-in-out infinite alternate; }
     @keyframes homeAura { from { opacity: .55; } to { opacity: .95; } }
+    /*vector-кот гасится, когда загрузилась фото-маска (renderer переключит сэмплер)*/
+    #home-cat-vector { transition: opacity .5s ease; }
     .home-ray { animation: homeRay 6s ease-in-out infinite alternate; }
     @keyframes homeRay { from { opacity: .12; } to { opacity: .4; } }
     .home-dot { animation: homeDot 3.4s ease-in-out infinite alternate; }
@@ -1040,39 +1042,41 @@
               <!-- Свечение за котом -->
               <ellipse cx="210" cy="252" rx="122" ry="158" fill="url(#hg-aura)" filter="url(#hf-aura)" opacity=".7"/>
 
-              <!-- Кот: аура -->
-              <g class="cat-aura" filter="url(#hf-aura)" stroke="#2f7bff" fill="#2f7bff" opacity=".75">
-                <path d="M210 168 C167 168 142 138 142 104 C142 72 168 46 210 46 C252 46 278 72 278 104 C278 138 253 168 210 168 Z
+              <!-- Кот (вектор-подложка; при загрузке фото-маски гасим эту группу) -->
+              <g id="home-cat-vector" opacity="1">
+                <g class="cat-aura" filter="url(#hf-aura)" stroke="#2f7bff" fill="#2f7bff" opacity=".75">
+                  <path d="M210 168 C167 168 142 138 142 104 C142 72 168 46 210 46 C252 46 278 72 278 104 C278 138 253 168 210 168 Z
+                    M158 64 L136 16 L196 44 Z M262 64 L284 16 L224 44 Z
+                    M210 176 C148 192 110 254 102 334 C96 396 116 448 158 464 L262 464 C304 448 324 396 318 334 C310 254 272 192 210 176 Z
+                    M156 388 C156 380 162 374 170 374 L184 374 C192 374 198 380 198 388 L198 448 C198 456 192 462 184 462 L170 462 C162 462 156 456 156 448 Z
+                    M222 388 C222 380 228 374 236 374 L250 374 C258 374 264 380 264 388 L264 448 C264 456 258 462 250 462 L236 462 C228 462 222 456 222 448 Z
+                    M312 386 C334 428 316 472 254 482 C198 490 136 482 112 460 C102 450 108 440 120 444 C152 458 212 460 252 454 C298 446 306 414 296 392 C292 380 306 374 312 386 Z"
+                    stroke-width="6"/>
+                </g>
+
+                <!-- Кот: чёткий контур -->
+                <path id="home-cat-body" d="M210 168 C167 168 142 138 142 104 C142 72 168 46 210 46 C252 46 278 72 278 104 C278 138 253 168 210 168 Z
                   M158 64 L136 16 L196 44 Z M262 64 L284 16 L224 44 Z
                   M210 176 C148 192 110 254 102 334 C96 396 116 448 158 464 L262 464 C304 448 324 396 318 334 C310 254 272 192 210 176 Z
                   M156 388 C156 380 162 374 170 374 L184 374 C192 374 198 380 198 388 L198 448 C198 456 192 462 184 462 L170 462 C162 462 156 456 156 448 Z
                   M222 388 C222 380 228 374 236 374 L250 374 C258 374 264 380 264 388 L264 448 C264 456 258 462 250 462 L236 462 C228 462 222 456 222 448 Z
                   M312 386 C334 428 316 472 254 482 C198 490 136 482 112 460 C102 450 108 440 120 444 C152 458 212 460 252 454 C298 446 306 414 296 392 C292 380 306 374 312 386 Z"
-                  stroke-width="6"/>
-              </g>
+                  fill="url(#hg-body)" stroke="#7fd2ff" stroke-opacity=".85" stroke-width="2.4" stroke-linejoin="round"/>
 
-              <!-- Кот: чёткий контур -->
-              <path id="home-cat-body" d="M210 168 C167 168 142 138 142 104 C142 72 168 46 210 46 C252 46 278 72 278 104 C278 138 253 168 210 168 Z
-                M158 64 L136 16 L196 44 Z M262 64 L284 16 L224 44 Z
-                M210 176 C148 192 110 254 102 334 C96 396 116 448 158 464 L262 464 C304 448 324 396 318 334 C310 254 272 192 210 176 Z
-                M156 388 C156 380 162 374 170 374 L184 374 C192 374 198 380 198 388 L198 448 C198 456 192 462 184 462 L170 462 C162 462 156 456 156 448 Z
-                M222 388 C222 380 228 374 236 374 L250 374 C258 374 264 380 264 388 L264 448 C264 456 258 462 250 462 L236 462 C228 462 222 456 222 448 Z
-                M312 386 C334 428 316 472 254 482 C198 490 136 482 112 460 C102 450 108 440 120 444 C152 458 212 460 252 454 C298 446 306 414 296 392 C292 380 306 374 312 386 Z"
-                fill="url(#hg-body)" stroke="#7fd2ff" stroke-opacity=".85" stroke-width="2.4" stroke-linejoin="round"/>
-
-              <!-- Морда -->
-              <g>
-                <path d="M178 102 q10 -10 22 0 q-10 9 -22 0 Z" fill="#d7f0ff" filter="url(#hf-soft)" opacity=".95"/>
-                <path d="M220 102 q10 -10 22 0 q-10 9 -22 0 Z" fill="#d7f0ff" filter="url(#hf-soft)" opacity=".95"/>
-                <path d="M204 122 L216 122 L210 130 Z" fill="#9fd4ff" opacity=".8"/>
-                <path d="M210 130 q-6 8 -14 6 M210 130 q6 8 14 6" fill="none" stroke="#9fd4ff" stroke-opacity=".55" stroke-width="1.4"/>
-                <g stroke="#9fd4ff" stroke-opacity=".3" stroke-width="1.2">
-                  <line x1="168" y1="114" x2="136" y2="106"/>
-                  <line x1="168" y1="120" x2="134" y2="118"/>
-                  <line x1="168" y1="126" x2="138" y2="130"/>
-                  <line x1="252" y1="114" x2="284" y2="106"/>
-                  <line x1="252" y1="120" x2="286" y2="118"/>
-                  <line x1="252" y1="126" x2="282" y2="130"/>
+                <!-- Морда -->
+                <g>
+                  <path d="M178 102 q10 -10 22 0 q-10 9 -22 0 Z" fill="#d7f0ff" filter="url(#hf-soft)" opacity=".95"/>
+                  <path d="M220 102 q10 -10 22 0 q-10 9 -22 0 Z" fill="#d7f0ff" filter="url(#hf-soft)" opacity=".95"/>
+                  <path d="M204 122 L216 122 L210 130 Z" fill="#9fd4ff" opacity=".8"/>
+                  <path d="M210 130 q-6 8 -14 6 M210 130 q6 8 14 6" fill="none" stroke="#9fd4ff" stroke-opacity=".55" stroke-width="1.4"/>
+                  <g stroke="#9fd4ff" stroke-opacity=".3" stroke-width="1.2">
+                    <line x1="168" y1="114" x2="136" y2="106"/>
+                    <line x1="168" y1="120" x2="134" y2="118"/>
+                    <line x1="168" y1="126" x2="138" y2="130"/>
+                    <line x1="252" y1="114" x2="284" y2="106"/>
+                    <line x1="252" y1="120" x2="286" y2="118"/>
+                    <line x1="252" y1="126" x2="282" y2="130"/>
+                  </g>
                 </g>
               </g>
 

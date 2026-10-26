@@ -43,6 +43,7 @@
       "index.html",
       "assets/icon.ico",
       "assets/icon.png",
+      "assets/cat-sil.png",
       "package.json"
     ],
     "asar": true,

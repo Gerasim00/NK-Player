@@ -876,7 +876,7 @@ $('nav-home').addEventListener('click', () => openView({ type: 'home' }));
 // а вся сцена чуть наклоняется за курсором (параллакс). Единицы координат —
 // viewBox 420×520, в кадре рисуем прямо в них через setTransform.
 const HOLO = {
-  canvas: null, ctx: null, wrap: null, parts: [],
+  canvas: null, ctx: null, wrap: null, parts: [], mask: null,
   inited: false, running: false, raf: 0, t0: 0,
   k: 1, glitch: null,
   tilt: { x: 0, y: 0, tx: 0, ty: 0 }
@@ -890,19 +890,79 @@ for (let i = 0; i < 20; i++) {
   HOLO_HOT.push(`rgba(168,222,255,${a})`);
 }
 
+// Фото-маска кота: вырезана из референса скриптом (порог яркости + морфология,
+// кольца/лучи/кнопку почистили). Как только загрузилась — переключаем сэмплирование
+// на неё и плавно гасим векторную подложку. Если файл недоступен — остаётся вектор.
+(function preloadCatMask() {
+  const im = new Image();
+  im.onload = () => {
+    HOLO.mask = im;
+    const vec = document.getElementById('home-cat-vector');
+    if (vec) vec.style.opacity = '0';
+    if (HOLO.inited) HOLO.parts = holoSample();
+  };
+  im.src = 'assets/cat-sil.png';
+})();
+
+// Морда поверх частиц (только в режиме фото-маски): светящиеся глаза-щёлки
+// с редким миганием и тонкие усы — координаты сняты с референса
+const HOLO_EYES = [[120, 93], [177, 97]];
+function drawHoloFace(ctx, t) {
+  const blink = ((t * 1000) % 7200) < 140 ? 0.15 : 1;
+  ctx.save();
+  ctx.globalAlpha = blink;
+  for (let i = 0; i < 2; i++) {
+    const ex = HOLO_EYES[i][0];
+    const ey = HOLO_EYES[i][1] + Math.sin(t * 0.9 + i) * 0.8;
+    const g = ctx.createRadialGradient(ex, ey, 0, ex, ey, 21);
+    g.addColorStop(0, 'rgba(210,240,255,.75)');
+    g.addColorStop(0.45, 'rgba(130,200,255,.28)');
+    g.addColorStop(1, 'rgba(130,200,255,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.ellipse(ex, ey, 21, 13, 0, 0, 6.2832); ctx.fill();
+    ctx.fillStyle = 'rgba(228,248,255,.95)';
+    ctx.beginPath(); ctx.ellipse(ex, ey, 5.4, 2.6, 0, 0, 6.2832); ctx.fill();
+  }
+  ctx.strokeStyle = 'rgba(190,226,255,.33)';
+  ctx.lineWidth = 0.9;
+  ctx.beginPath();
+  ctx.moveTo(118, 100); ctx.lineTo(64, 86);
+  ctx.moveTo(116, 108); ctx.lineTo(58, 106);
+  ctx.moveTo(118, 114); ctx.lineTo(66, 124);
+  ctx.moveTo(184, 102); ctx.lineTo(240, 88);
+  ctx.moveTo(186, 108); ctx.lineTo(246, 104);
+  ctx.moveTo(184, 114); ctx.lineTo(238, 122);
+  ctx.stroke();
+  ctx.restore();
+}
+
 function holoSample() {
-  const pathEl = $('home-cat-body');
-  if (!pathEl) return [];
-  const off = document.createElement('canvas');
-  off.width = 420; off.height = 520;
-  const octx = off.getContext('2d', { willReadFrequently: true });
-  // Мягкий край даёт градиентную кайму: из неё берём «волоски» вдоль контура
-  octx.filter = 'blur(1.4px)';
-  octx.fillStyle = '#fff';
-  octx.fill(new Path2D(pathEl.getAttribute('d')));
-  octx.filter = 'none';
-  const img = octx.getImageData(0, 0, 420, 520).data;
-  const aAt = (x, y) => img[(y * 420 + x) * 4 + 3];
+  // Поле альфы 420×520: фото-маска (assets/cat-sil.png), если загрузилась,
+  // иначе — векторный силуэт #home-cat-body как fallback
+  let aAt;
+  if (HOLO.mask) {
+    const off = document.createElement('canvas');
+    off.width = 420; off.height = 520;
+    const octx = off.getContext('2d', { willReadFrequently: true });
+    octx.filter = 'blur(1.1px)';
+    octx.drawImage(HOLO.mask, 0, 0, 420, 520);
+    octx.filter = 'none';
+    const img = octx.getImageData(0, 0, 420, 520).data;
+    aAt = (x, y) => img[(y * 420 + x) * 4 + 3];
+  } else {
+    const pathEl = $('home-cat-body');
+    if (!pathEl) return [];
+    const off = document.createElement('canvas');
+    off.width = 420; off.height = 520;
+    const octx = off.getContext('2d', { willReadFrequently: true });
+    // Мягкий край даёт градиентную кайму: из неё берём «волоски» вдоль контура
+    octx.filter = 'blur(1.4px)';
+    octx.fillStyle = '#fff';
+    octx.fill(new Path2D(pathEl.getAttribute('d')));
+    octx.filter = 'none';
+    const img = octx.getImageData(0, 0, 420, 520).data;
+    aAt = (x, y) => img[(y * 420 + x) * 4 + 3];
+  }
 
   const all = [];
   for (let y = 2; y < 518; y += 2) {
@@ -1003,6 +1063,9 @@ function holoFrame(now) {
     ctx.fillStyle = (p.e > 0.55 ? HOLO_HOT : HOLO_COLD)[(a * 19) | 0];
     ctx.fillRect(x, y, p.s, p.s);
   }
+
+  // Глаза и усы — поверх частиц (векторная морда уже погашена маской)
+  if (HOLO.mask) drawHoloFace(ctx, t);
 
   // Наклон сцены за курсором (вглубь, с инерцией)
   const tl = HOLO.tilt;

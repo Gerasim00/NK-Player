@@ -949,8 +949,9 @@ function applyHoloMaskChoice() {
 }
 
 // Морда поверх частиц (только в режиме фото-маски): светящиеся глаза-щёлки
-// с редким миганием и тонкие усы — координаты сняты с референса
-const HOLO_EYES = [[120, 93], [177, 97]];
+// с редким миганием. Синтетические усы больше не нужны — настоящие усы
+// приходят вместе с маской (ИИ-генерат). Глаза — под новую маску (кот по центру)
+const HOLO_EYES = [[191, 104], [242, 104]];
 function drawHoloFace(ctx, t) {
   const blink = ((t * 1000) % 7200) < 140 ? 0.15 : 1;
   ctx.save();
@@ -967,16 +968,6 @@ function drawHoloFace(ctx, t) {
     ctx.fillStyle = 'rgba(228,248,255,.95)';
     ctx.beginPath(); ctx.ellipse(ex, ey, 5.4, 2.6, 0, 0, 6.2832); ctx.fill();
   }
-  ctx.strokeStyle = 'rgba(190,226,255,.33)';
-  ctx.lineWidth = 0.9;
-  ctx.beginPath();
-  ctx.moveTo(118, 100); ctx.lineTo(64, 86);
-  ctx.moveTo(116, 108); ctx.lineTo(58, 106);
-  ctx.moveTo(118, 114); ctx.lineTo(66, 124);
-  ctx.moveTo(184, 102); ctx.lineTo(240, 88);
-  ctx.moveTo(186, 108); ctx.lineTo(246, 104);
-  ctx.moveTo(184, 114); ctx.lineTo(238, 122);
-  ctx.stroke();
   ctx.restore();
 }
 
@@ -1025,18 +1016,19 @@ function holoSample() {
       const grad = Math.abs(aAt(Math.min(417, x + 3), y) - aAt(Math.max(2, x - 3), y)) +
         Math.abs(aAt(x, Math.min(517, y + 3)) - aAt(x, Math.max(2, y - 3)));
       e = Math.max(e, Math.min(1, grad / 340));
+      const rg = 8 + Math.random() * 30; // окно внутреннего течения
       all.push({
         x, y, e,
         f: 0.5 + Math.random() * 1.1,
         ph: Math.random() * 6.283,
         v: 0.16 + Math.random() * 0.36,
-        o: Math.random() * 520,
+        rg, o: Math.random() * rg,
         s: (e > 0.5 ? 1.5 : 1) + Math.random() * 1.1
       });
     }
   }
-  // Прореживание: частиц ^2400 — цикл остаётся дешёвым даже на слабых машинах
-  const TARGET = 2400;
+  // Прореживание: ~6400 частиц — плотность, при которой силуэт читается
+  const TARGET = 6400;
   if (all.length > TARGET) {
     const stride = all.length / TARGET;
     const out = new Array(TARGET);
@@ -1100,15 +1092,16 @@ function holoFrame(now) {
 
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i];
-    // Всплытие внутри объёма: частица уходит вверх, дойдя до макушки — снизу новая
-    let y = p.y - ((t * 12 * p.v + p.o) % 520);
-    if (y < 0) y += 520;
+    // Живое течение ВНУТРИ силуэта: частица плывёт вверх в узком окне вокруг
+    // своей точки (8–38px) и возвращается — форма кота не размывается.
+    // (Раньше дрейф шёл по всем 520px и силуэт превращался в туман.)
+    const y = p.y - p.rg / 2 + ((t * 12 * p.v + p.o) % p.rg);
     const x = p.x + Math.sin(t * p.f * 1.6 + p.ph) * 1.9 +
       (gl && y > gl.y && y < gl.y + gl.h ? gl.dx : 0);
-    let a = (0.15 + p.e * 0.55) * pulse;
-    if (Math.random() < 0.08) a += Math.random() * 0.25; // точечные искры
+    let a = (0.10 + p.e * 0.40) * pulse;
+    if (Math.random() < 0.06) a += Math.random() * 0.22; // точечные искры
     const ds = Math.abs(y - scan);
-    if (ds < 26) a += (1 - ds / 26) * 0.45;
+    if (ds < 26) a += (1 - ds / 26) * 0.22;
     if (a > 1) a = 1;
     ctx.fillStyle = (p.e > 0.55 ? HOLO_HOT : HOLO_COLD)[(a * 19) | 0];
     ctx.fillRect(x, y, p.s, p.s);

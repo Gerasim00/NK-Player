@@ -6,6 +6,7 @@ const localMusic = require('./local-music');
 const library = require('./library');
 const updates = require('./updates');
 const discord = require('./discord-rpc');
+const songCache = require('./song-cache');
 
 const IS_DEV = !app.isPackaged;
 
@@ -121,6 +122,7 @@ app.whenReady().then(() => {
   setupVkCdnHeaders();
   localMusic.init(app.getPath('userData'));
   library.init(app.getPath('userData'));
+  songCache.init(app.getPath('userData'));
   createWindow();
   discord.start();
 });
@@ -242,10 +244,62 @@ vkHandler('audio:resolve', (ses, arg) => {
 });
 
 // Фоновый прогрев самозалитов: ВК конвертирует залитые файлы по первому
-// запросу сегмента (до 15-30 с), поэтому заранее дёргаем начало трека
-vkHandler('audio:warm', (ses, urls) =>
-  vk.warmSegments(ses, Array.isArray(urls) ? urls.slice(0, 60) : [])
+// запросу сегмента (до 15-30 с), поэтому заранее дёргаем начало трека.
+// Формат: [{ id, urls: [...] }] — по несколько ссылок на трек (okcdn-HLS + cs*).
+vkHandler('audio:warm', (ses, items) =>
+  vk.warmSegments(
+    ses,
+    (Array.isArray(items) ? items : []).flatMap((it) =>
+      (it && Array.isArray(it.urls)) ? it.urls.map((u) => ({ id: it.id, url: u })) : []
+    )
+  )
 );
+
+// Постоянный кэш треков: мгновенный старт уже скачанных и фоновый кач вперёд
+ipcMain.handle('audio:cacheGet', (e, arg) => {
+  try {
+    return { success: true, data: songCache.get(String((arg && arg.id) || '')) };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('audio:cacheStore', async (e, arg) => {
+  const id = String((arg && arg.id) || '');
+  const url = String((arg && arg.url) || '');
+  try {
+    const out = await songCache.store(id, url);
+    return { success: true, data: out };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// Настройки кэша: лимит, ручная очистка, занятое место
+ipcMain.handle('cache:limit', (e, arg) => {
+  try {
+    songCache.setLimit(Number((arg && arg.bytes) || 0));
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('cache:clear', () => {
+  try {
+    return { success: true, data: songCache.clear() };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('cache:stats', () => {
+  try {
+    return { success: true, data: songCache.stats() };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
 
 // ---------------------------------------------------------------- Локальные плейлисты
 

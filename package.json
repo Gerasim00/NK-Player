@@ -1,8 +1,8 @@
 {
   "name": "nk-player",
   "productName": "NK Player",
-  "version": "1.4.3",
-  "description": "NK Player — музыкальный плеер для ВКонтакте",
+  "version": "1.4.6",
+  "description": "NK Player вЂ” РјСѓР·С‹РєР°Р»СЊРЅС‹Р№ РїР»РµРµСЂ РґР»СЏ Р’РљРѕРЅС‚Р°РєС‚Рµ",
   "author": {
     "name": "NK Player"
   },
@@ -35,6 +35,7 @@
       "main.js",
       "renderer.js",
       "vk-audio.js",
+      "song-cache.js",
       "local-music.js",
       "library.js",
       "updates.js",

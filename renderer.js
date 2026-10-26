@@ -88,18 +88,80 @@ let prefetchTimer = null;
 let prefetchRunning = false;
 let prefetchGen = 0;
 
-// Прогрев самозалитов: ВК конвертирует залитые файлы в HLS по первому запросу
-// сегмента (первый холодный — до 15-30 с). Тихо забираем начало трека заранее.
-// Настоящие самозалиты узнаём по отсутствию обложки, чтобы не греть весь каталог.
+// ----- Постоянный кэш треков (file://-мгновенный старт) -----
+
+// Ссылки для прогрева HLS: греем только те источники, которые реально играют —
+// это okcdn-HLS (t.stream) и расшифрованные cs*-ссылки с .m3u8. Прямые mp3
+// прогрева не требуют: для них фоном качается файл в постоянный кэш.
+function linksForWarm(t) {
+  const out = [];
+  if (t && t.stream && t.stream.includes('.m3u8')) out.push(t.stream);
+  if (t && t.url && t.url.includes('.m3u8')) out.push(t.url);
+  return out.slice(0, 2);
+}
+
+// Прямая ссылка для постоянного кэша: mp3/aac без HLS-обёртки. Для самозалитов
+// это часто расшифрованная cs*-ссылка — медленная сеть, но качается в фоне,
+// пока играют другие треки, и после этого трек открывается мгновенно навсегда.
+function directUrlFor(t) {
+  if (!t || t.local) return '';
+  if (t.stream && !/\.m3u8/i.test(t.stream)) return t.stream;
+  if (t.url && !/\.m3u8/i.test(t.url)) return t.url;
+  return '';
+}
+
+// id трека -> file://-ссылка в кэше (наполняется ответами cacheGet/cacheStore)
+const localHits = new Map();
+
+async function cachedFileUrl(t) {
+  if (!t || t.local) return '';
+  const known = localHits.get(t.id);
+  if (known) return known;
+  try {
+    const res = await vkCall('audio:cacheGet', { id: t.id });
+    if (res && res.url) {
+      localHits.set(t.id, res.url);
+      return res.url;
+    }
+  } catch (e) { /* кэш просто пуст */ }
+  return '';
+}
+
+// Фоново ставим треки на скачивание: текущий (чтобы после перезапуска открылся
+// мгновенно) и следующие по очереди (чтобы переход был без ожидания).
+function storeUpcoming(pos) {
+  const wanted = {};
+  const add = (t) => {
+    if (!t || t.local || wanted[t.id] || localHits.has(t.id)) return;
+    const u = directUrlFor(t);
+    if (!u) return;
+    wanted[t.id] = u;
+  };
+  const current = state.queue[state.order[pos]];
+  add(current);
+  for (let p = pos + 1; p < state.order.length && Object.keys(wanted).length < 3; p++) {
+    add(state.queue[state.order[p]]);
+  }
+  for (const [id, url] of Object.entries(wanted)) {
+    vkCall('audio:cacheStore', { id, url })
+      .then((out) => { if (out && out.url) localHits.set(id, out.url); })
+      .catch(() => {});
+  }
+}
+
+// Прогрев самозалитов: ВК собирает HLS из залитого файла по первому запросу
+// сегмента (холодный — 15-40 с). Греем заранее, тихо и дёшево (два GET по 64 КБ).
 const warmedTracks = new Set();
-let warmBudget = 400; // ~40 МБ трафика за сессию
+let warmBudget = 500; // треков за сессию; запросы мелкие, трафик копеечный
 let warmChain = Promise.resolve();
 function warmUploads(items) {
-  const batch = items.filter((it) => it && it.id && it.url && !warmedTracks.has(it.id) && !it.cover && warmBudget > 0);
+  const batch = (items || [])
+    .filter((it) => it && it.id && Array.isArray(it.urls) && it.urls.length
+      && !warmedTracks.has(it.id) && warmBudget > 0);
   if (!batch.length) return;
   batch.forEach((it) => { warmedTracks.add(it.id); warmBudget--; });
   warmChain = warmChain
-    .then(() => vkCall('audio:warm', batch.map((it) => it.url)))
+    .then(() => vkCall('audio:warm', batch))
     .catch(() => {});
 }
 
@@ -126,9 +188,20 @@ function schedulePrefetch(list) {
       const chunk = pending.slice(0, 30);
       const res = await vkCall('audio:resolve', { ids: chunk.map((p) => p.reloadId), background: true });
       // Упёрлись в лимит ВК — ссылок предзагрузке не досталось; воспроизведение
-      // важнее, а до нужных треков ссылки дойдут через ensureUrls.
-      if (res && !res.rateLimited && res.urls) {
-        warmUploads(chunk.filter((p) => res.urls[p.track.id]).map((p) => ({ id: p.track.id, url: res.urls[p.track.id], cover: p.track.cover })));
+      // важнее, а до нужных трека ссылки дойдут через ensureUrls.
+      if (res && !res.rateLimited) {
+        const now = Date.now();
+        const items = [];
+        for (const p of chunk) {
+          const t = p.track;
+          const u = res.urls && res.urls[t.id];
+          const st = res.streams && res.streams[t.id];
+          if (u) { t.url = u; t.urlTime = now; }
+          if (st && st.url) { t.stream = st.url; t.streamExpires = st.expires; }
+          const urls = linksForWarm(t);
+          if (urls.length) items.push({ id: t.id, urls });
+        }
+        warmUploads(items);
       }
     } catch (e) {
       // тихо: предзагрузка не критична
@@ -270,6 +343,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   restoreSettings();
   applyTermsState();
   showVersion();
+  // Лимит кэша из настроек применяем сразу после старта
+  ipcRenderer.invoke('cache:limit', { bytes: (settings.cacheLimitMB || DEFAULT_SETTINGS.cacheLimitMB) * 1048576 }).catch(() => {});
 
   const session = await ipcRenderer.invoke('auth:check');
   if (session.loggedIn) showApp();
@@ -1043,6 +1118,55 @@ async function openLocalPlaylist(pl) {
 
 // ---------------------------------------------------------------- Список треков
 
+// Большой список (500+ строк) целиком в DOM съедает память и тормозит на
+// ресайзе окна: реflow проходит по десяткам тысяч узлов. Строки фиксированной
+// высоты (58px), поэтому держим в DOM только видимое окно + запас, а снаружи —
+// пустые спейсеры той же высоты: прокрутка остаётся нативной и плавной.
+const ROW_H = 58;
+const VIRT_THRESHOLD = 300; // меньше строк — рендерим всё как раньше
+const VIRT_BUFFER = 8;      // запас строк сверху/снизу, чтобы окно не мигало
+
+let virtEls = null;                       // { top, bottom } спейсеры
+let virtWindow = { first: -1, last: -1 }; // текущее отрисованное окно
+const renderedRows = [];                  // DOM-ссылки строк окна
+
+function isVirtual() {
+  return !!virtEls;
+}
+
+function renderWindow(scrollOverride) {
+  if (!virtEls) return;
+  const len = state.displayed.length;
+  if (!len) { virtWindow = { first: -1, last: -1 }; return; }
+  const scrollTop = Math.max(0, scrollOverride != null ? scrollOverride : tracksContainer.scrollTop);
+  const viewH = tracksContainer.clientHeight || 600;
+  const first = Math.max(0, Math.floor(scrollTop / ROW_H) - VIRT_BUFFER);
+  const last = Math.min(len, Math.max(first + 1, Math.ceil((scrollTop + viewH) / ROW_H) + VIRT_BUFFER));
+  if (first === virtWindow.first && last === virtWindow.last) return;
+
+  for (const el of renderedRows) el.remove();
+  renderedRows.length = 0;
+  const frag = document.createDocumentFragment();
+  for (let i = first; i < last; i++) {
+    const row = createTrackRow(state.displayed[i], i);
+    renderedRows.push(row);
+    frag.appendChild(row);
+  }
+  tracksContainer.insertBefore(frag, virtEls.bottom);
+  virtEls.top.style.height = `${first * ROW_H}px`;
+  virtEls.bottom.style.height = `${Math.max(0, len - last) * ROW_H}px`;
+  virtWindow = { first, last };
+}
+
+// Кнопка «Показать ещё» — вне окна, живёт после нижнего спейсера
+function buildLoadMoreButton() {
+  const more = document.createElement('button');
+  more.className = 'btn-ghost load-more';
+  more.textContent = 'Показать ещё';
+  more.addEventListener('click', () => loadMoreSearch(more));
+  return more;
+}
+
 function renderTracks() {
   const q = filterInput.value.trim().toLowerCase();
   const all = currentViewTracks();
@@ -1060,24 +1184,34 @@ function renderTracks() {
     });
   }
 
+  const keepScroll = tracksContainer.scrollTop;
   tracksContainer.textContent = '';
+  virtEls = null;
+  virtWindow = { first: -1, last: -1 };
+  renderedRows.length = 0;
+
   if (!state.displayed.length) {
     showPlaceholder(q ? 'Ничего не найдено по фильтру' : 'Здесь пока пусто');
     return;
   }
 
-  const frag = document.createDocumentFragment();
-  state.displayed.forEach((track, idx) => frag.appendChild(createTrackRow(track, idx)));
+  const wantLoadMore = state.view.type === 'search' && state.search.more && !q;
 
-  if (state.view.type === 'search' && state.search.more && !q) {
-    const more = document.createElement('button');
-    more.className = 'btn-ghost load-more';
-    more.textContent = 'Показать ещё';
-    more.addEventListener('click', () => loadMoreSearch(more));
-    frag.appendChild(more);
+  if (state.displayed.length > VIRT_THRESHOLD) {
+    virtEls = { top: document.createElement('div'), bottom: document.createElement('div') };
+    tracksContainer.appendChild(virtEls.top);
+    // Окно строим по сохранённой прокрутке: нативный scrollTop живёт дальше,
+    // спейсеры задают полную высоту списка
+    tracksContainer.appendChild(virtEls.bottom);
+    renderWindow(keepScroll);
+    if (keepScroll) tracksContainer.scrollTop = Math.min(keepScroll, Math.max(0, tracksContainer.scrollHeight - tracksContainer.clientHeight));
+    if (wantLoadMore) tracksContainer.appendChild(buildLoadMoreButton());
+  } else {
+    const frag = document.createDocumentFragment();
+    state.displayed.forEach((track, idx) => frag.appendChild(createTrackRow(track, idx)));
+    if (wantLoadMore) frag.appendChild(buildLoadMoreButton());
+    tracksContainer.appendChild(frag);
   }
-
-  tracksContainer.appendChild(frag);
   highlightCurrent();
 
   // Подзаголовок очереди пересчитывается вместе с окном, а не только при входе
@@ -1277,6 +1411,30 @@ function openAddToPlaylist(e, track) {
 
 // Клик по уже играющему треку ставит его на паузу (или снимает с паузы),
 // а не начинает воспроизведение заново.
+// Пересчёт окна виртуализированного списка: только когда прокрутка/размер окна
+// реально уходят за текущие границы, ре-render не происходит вообще.
+let scrollFrame = 0;
+let resizeFrame = 0;
+tracksContainer.addEventListener('scroll', () => {
+  if (!isVirtual() || scrollFrame) return;
+  scrollFrame = requestAnimationFrame(() => {
+    scrollFrame = 0;
+    renderWindow();
+  });
+}, { passive: true });
+
+// Ресайз окна: меняется высота контейнера → границы потолка окна сдвигаются,
+// пересчитываем с rAF-троттлингом. Малые списки (без виртуализации) не трогаем.
+window.addEventListener('resize', () => {
+  if (!isVirtual() || resizeFrame) return;
+  resizeFrame = requestAnimationFrame(() => {
+    resizeFrame = 0;
+    if (isVirtual()) {
+      virtWindow = { first: -1, last: -1 };
+      renderWindow();
+    }
+  });
+});
 tracksContainer.addEventListener('click', (e) => {
   if (e.target.closest('.track-act') || e.target.closest('.track-artist.link')) return;
   const row = e.target.closest('.track');
@@ -1732,9 +1890,9 @@ async function ensureUrls(pos, force) {
       t.streamExpires = streams[t.id].expires;
     }
   }
-  // Пока резолвим треки рядом с играющим — сразу греем их сегменты, иначе
+  // Пока резолвим треки рядом с играющим — сразу греем их HLS-ссылки, иначе
   // холодный самозалит при переходе будет тянуть сегмент 15-30 секунд
-  warmUploads(batch.map((t) => ({ id: t.id, url: t.url, cover: t.cover })));
+  warmUploads(batch.map((t) => ({ id: t.id, urls: linksForWarm(t) })));
 
   // После обновления сначала пробуем свежую ссылку okcdn, старую — в запас
   if (hasLiveStream(track)) return track.stream;
@@ -1749,6 +1907,9 @@ async function playAt(pos, { force = false, skipped = 0, waits = 0 } = {}) {
   if (!track) return;
 
   const token = ++state.playToken;
+  // Кроссфейд: это целевой переход — теневой хвост продолжает дотягивать старый
+  // трек, иначе переход (например, ручной клик) просто гасит его.
+  if (!(cf.blend && cf.blendPos === pos)) cfCleanup();
   state.pos = pos;
   state.current = track;
   if (!force) state.retried = false;
@@ -1757,6 +1918,16 @@ async function playAt(pos, { force = false, skipped = 0, waits = 0 } = {}) {
   updateQueueNav();
   // Панель очереди показывает предстоящие треки — на новом треке окно сдвигается
   if (state.view.type === 'queue') renderTracks();
+
+  // Постоянный кэш: файл уже на диске — стартуем мгновенно, без ссылок и сети
+  if (!force && !track.local) {
+    const cached = await cachedFileUrl(track);
+    if (token === state.playToken && cached) {
+      loadSource(cached);
+      storeUpcoming(pos);
+      return;
+    }
+  }
 
   let url = '';
   let rateLimited = false;
@@ -1796,6 +1967,8 @@ async function playAt(pos, { force = false, skipped = 0, waits = 0 } = {}) {
   }
 
   loadSource(url);
+  // Текущий и ближайшие треки фоном попадают в постоянный кэш
+  storeUpcoming(pos);
 }
 
 function loadSource(url) {
@@ -1803,10 +1976,36 @@ function loadSource(url) {
 
   // Граф эквалайзера собираем до старта: элемент можно подключить к Web Audio
   // только один раз, и лучше сделать это сразу, чем переключать на ходу.
-  if (eq.enabled) ensureEqGraph();
+  // Граф собираем до старта: элемент подключается к Web Audio один раз, здесь
+  // же вся цепочка эффектов (бас/surround/нормализация/фейд).
+  ensureEqGraph();
+
+  // Уровень нового трека: обычный переход — сразу полная громкость, кроссфейд —
+  // нарастание из нуля за время смешения, пока теневой хвост затихает.
+  if (fx.ctx && fx.fadeGain && !eq.failed) {
+    const t = fx.ctx.currentTime;
+    fx.fadeGain.gain.cancelScheduledValues(t);
+    if (cf.blend && settings.crossfade > 0) {
+      fx.fadeGain.gain.setValueAtTime(0.0001, t);
+      fx.fadeGain.gain.exponentialRampToValueAtTime(1, t + Math.max(0.4, settings.crossfade));
+    } else {
+      fx.fadeGain.gain.setValueAtTime(1, t);
+    }
+  }
 
   if (url.includes('.m3u8') && Hls.isSupported()) {
-    hls = new Hls({ enableWorker: true });
+    // startFragPrefetch качает первый сегмент параллельно манифесту — экономит
+    // секунду-другую на старте. fragLoadingTimeOut поднят: холодный сегмент
+    // самозалита ВК собирает до 40 с, дефолтные 20 с рвали его на ретраи.
+    hls = new Hls({
+      enableWorker: true,
+      startFragPrefetch: true,
+      fragLoadingTimeOut: 45000,
+      fragLoadingMaxRetry: 4,
+      maxBufferLength: 12,
+      maxMaxBufferLength: 90,
+      backBufferLength: 30
+    });
     hls.on(Hls.Events.ERROR, (_, data) => {
       if (data.fatal) onPlaybackError();
     });
@@ -1843,6 +2042,7 @@ audio.addEventListener('error', () => {
 
 function stopPlayback() {
   state.playToken++;
+  cfCleanup();
   if (hls) { hls.destroy(); hls = null; }
   audio.pause();
   audio.removeAttribute('src');
@@ -1902,7 +2102,11 @@ function togglePlay() {
     if (state.displayed.length) startQueue(state.displayed, firstPlayable(state.displayed));
     return;
   }
-  audio.paused ? audio.play().catch(() => {}) : audio.pause();
+  if (audio.paused) {
+    audio.play().catch(() => {});
+  } else {
+    pauseWithFade();
+  }
 }
 
 btnPlayPause.addEventListener('click', togglePlay);
@@ -1938,6 +2142,40 @@ const EQ_PRESETS = {
   'Рок': [5, 4, 2, 0, -1, -1, 1, 3, 5, 6],
   'Поп': [-1, 0, 1, 3, 4, 4, 2, 0, -1, -1],
   'Тише ночью': [-6, -5, -4, -3, -2, -2, -3, -4, -5, -6]
+};
+
+// ---------------------------------------------------------------- Настройки
+
+// Перечень пользовательских настроек:Playback (кроссфейд, нормализация, бас,
+// surround, фейд-пауза) и служебное (лимит кэша). Хранятся в localStorage.
+const SETTINGS_KEY = 'nk.settings.v1';
+const DEFAULT_SETTINGS = {
+  crossfade: 0,        // сек, 0..12
+  normalize: false,    // подравнивание громкости
+  bassBoost: 0,        // дБ, 0..12
+  surround: false,     // расширение стереобазы
+  fadePause: true,     // плавное затухание при паузе
+  cacheLimitMB: 2048   // 50..5120 МБ
+};
+let settings = (() => {
+  try {
+    return Object.assign({}, DEFAULT_SETTINGS, JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}') || {});
+  } catch (e) {
+    return Object.assign({}, DEFAULT_SETTINGS);
+  }
+})();
+
+function saveSettings() {
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) { /* ок */ }
+}
+
+// ---------------------------------------------------------------- Цепочка эффектов
+
+// Цепочка эффектов поверх эквалайзера: бас → surround → нормализация → фейд.
+// Все узлы всегда в графе, но прозрачны, пока соответствующая опция выключена.
+const fx = {
+  ctx: null, bass: null, bypass: null, haasMix: null,
+  normGain: null, analyser: null, fadeGain: null, agcTimer: 0
 };
 
 const eq = {
@@ -1977,12 +2215,69 @@ function ensureEqGraph() {
       prev = node;
     }
     prev.connect(gain);
-    gain.connect(ctx.destination);
+
+    // Далее общий граф эффектов (всегда в цепочке, прозрачный пока выключено):
+    // бас → surround(вход) → нормализация → затухание → выход.
+    const bass = ctx.createBiquadFilter();
+    bass.type = 'lowshelf';
+    bass.frequency.value = 90;
+    bass.gain.value = 0;
+
+    const wideIn = ctx.createGain();
+    const bypass = ctx.createGain();   // прямая дорожка, когда surround выключен
+    const haasMix = ctx.createGain();  // дорожка расширения стереобазы
+    haasMix.gain.value = 0;
+
+    const splitter = ctx.createChannelSplitter(2);
+    const merger = ctx.createChannelMerger(2);
+    const directL = ctx.createGain(); directL.gain.value = 0.8;
+    const directR = ctx.createGain(); directR.gain.value = 0.8;
+    const crossL = ctx.createDelay(0.05); crossL.delayTime.value = 0.011;
+    const crossR = ctx.createDelay(0.05); crossR.delayTime.value = 0.011;
+    const xGainL = ctx.createGain(); xGainL.gain.value = 0.35;
+    const xGainR = ctx.createGain(); xGainR.gain.value = 0.35;
+
+    wideIn.connect(bypass);
+    wideIn.connect(splitter);
+    splitter.connect(directL, 0); directL.connect(merger, 0, 0);
+    splitter.connect(directR, 1); directR.connect(merger, 0, 1);
+    // Чуть задержанные перекрёстные копии каналов — классическое расширение базы
+    splitter.connect(crossL, 0); crossL.connect(xGainL); xGainL.connect(merger, 0, 1);
+    splitter.connect(crossR, 1); crossR.connect(xGainR); xGainR.connect(merger, 0, 0);
+    merger.connect(haasMix);
+
+    // Нормализация громкости: авто-гейн по измеренному уровню потока
+    const normGain = ctx.createGain();
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.6;
+    bypass.connect(analyser);    // уровень меряем до нормализации
+    haasMix.connect(analyser);
+    bypass.connect(normGain);
+    haasMix.connect(normGain);
+
+    // Затухание при паузе и кроссфейд: мастер-гейн плеера
+    const fadeGain = ctx.createGain();
+    normGain.connect(fadeGain);
+    fadeGain.connect(ctx.destination);
+
+    gain.connect(bass);
+    bass.connect(wideIn);
 
     eq.ctx = ctx;
     eq.nodes = nodes;
     eq.gain = gain;
+
+    fx.ctx = ctx;
+    fx.bass = bass;
+    fx.bypass = bypass;
+    fx.haasMix = haasMix;
+    fx.normGain = normGain;
+    fx.analyser = analyser;
+    fx.fadeGain = fadeGain;
+
     applyEq();
+    applyFx();
     return true;
   } catch (e) {
     // Если элемент уже был подключён к графу, звук продолжает идти через него.
@@ -1990,6 +2285,8 @@ function ensureEqGraph() {
     eq.nodes = [];
     eq.gain = null;
     eq.failed = true;
+    fx.ctx = null;
+    fx.agcTimer = 0;
     return false;
   }
 }
@@ -2010,6 +2307,286 @@ function applyEq() {
 function resumeEq() {
   if (eq.ctx && eq.ctx.state === 'suspended') eq.ctx.resume().catch(() => {});
 }
+
+// Перекладываем настройки в узлы графа (бас, surround, нормализация)
+function applyFx() {
+  if (!fx.ctx) return;
+  const t = fx.ctx.currentTime;
+  if (fx.bass) fx.bass.gain.setTargetAtTime(settings.bassBoost, t, 0.08);
+  if (fx.bypass) fx.bypass.gain.setTargetAtTime(settings.surround ? 0 : 1, t, 0.05);
+  if (fx.haasMix) fx.haasMix.gain.setTargetAtTime(settings.surround ? 1 : 0, t, 0.05);
+  if (!settings.normalize && fx.normGain) fx.normGain.gain.setTargetAtTime(1, t, 0.3);
+  restartAgc();
+}
+
+// Авто-гейн: держим средний уровень потока около −18 dBFS, чтобы треки
+// «не прыгали» громкостью. Медленно и с ограничениями, без агрессии.
+const AGC_BUF = new Float32Array(2048);
+function agcTick() {
+  if (!fx.analyser || !fx.ctx || audio.paused) return;
+  try { fx.analyser.getFloatTimeDomainData(AGC_BUF); } catch (e) { return; }
+  let sum = 0;
+  for (let i = 0; i < AGC_BUF.length; i++) sum += AGC_BUF[i] * AGC_BUF[i];
+  const rms = Math.sqrt(sum / AGC_BUF.length);
+  if (rms < 0.004) return; // тишина/ пауза — не «поднимаем» пустоту
+  const target = 0.125;    // ≈ −18 dBFS
+  const want = Math.min(3.0, Math.max(0.5, target / rms));
+  const cur = fx.normGain.gain.value;
+  const next = cur + (want - cur) * 0.22;
+  fx.normGain.gain.setTargetAtTime(next, fx.ctx.currentTime, 0.4);
+}
+
+function restartAgc() {
+  if (fx.agcTimer) { clearInterval(fx.agcTimer); fx.agcTimer = 0; }
+  if (!fx.ctx) return;
+  if (settings.normalize && fx.analyser && fx.normGain) {
+    fx.agcTimer = setInterval(agcTick, 400);
+  }
+}
+
+// Мастер-гейн возвращаем в единицу (после затухания/кроссфейда)
+function restoreFadeGain() {
+  if (!fx.ctx || !fx.fadeGain) return;
+  const t = fx.ctx.currentTime;
+  fx.fadeGain.gain.cancelScheduledValues(t);
+  fx.fadeGain.gain.setValueAtTime(1, t);
+}
+
+// Плавное затухание при паузе: сначала гейн в ноль, потом элемент на паузу.
+// Кроссфейд-смешение не трогаем — под ним своя логика уровней.
+function pauseWithFade() {
+  if (!fx.ctx || eq.failed || !settings.fadePause) { audio.pause(); return; }
+  const t = fx.ctx.currentTime;
+  if (!cf.blend) {
+    fx.fadeGain.gain.cancelScheduledValues(t);
+    fx.fadeGain.gain.setTargetAtTime(0.0001, t, 0.08); // ~240 мс
+  }
+  setTimeout(() => {
+    audio.pause();
+    // Пока пауза — возвращаем гейн к единице: после снятия паузы звук сразу полный
+    if (fx.ctx && !cf.blend) restoreFadeGain();
+  }, 220);
+}
+
+// ---------------------------------------------------------------- Кроссфейд
+
+// Схема: за CF-секунды до конца текущего трека переключаем главный <audio> на
+// следующий трек сразу (он нарастает из нуля за CF), а хвост старого дотягивает
+// теневой элемент audio2 через собственный гейн, затухающий параллельно.
+// Состояние, прогресс и очередь остаются на главном элементе — рисков минимум.
+const cf = { blend: false, blendPos: -1, audio2: null, source: null, gain: null, timer: 0 };
+
+function cfCleanup() {
+  if (cf.timer) { clearTimeout(cf.timer); cf.timer = 0; }
+  cf.blend = false;
+  cf.blendPos = -1;
+  if (cf.audio2) {
+    try {
+      cf.audio2.pause();
+      cf.audio2.removeAttribute('src');
+      cf.audio2.load();
+    } catch (e) { /* ок */ }
+  }
+  if (cf.gain && fx.ctx) {
+    const t = fx.ctx.currentTime;
+    cf.gain.gain.cancelScheduledValues(t);
+    cf.gain.gain.setValueAtTime(0, t);
+  }
+}
+
+// Запускает теневой хвост старого трека; вызывает ПЕРЕД playAt(next),
+// чтобы основной элемент мгновенно освободился под новый источник.
+function cfStartTail() {
+  if (!fx.ctx || eq.failed) return false;
+  const played = audio.currentSrc || audio.src || '';
+  if (!played) return false;
+  if (!cf.audio2) {
+    cf.audio2 = document.createElement('audio');
+    cf.audio2.preload = 'auto';
+  }
+  const t = fx.ctx.currentTime;
+  cf.audio2.src = played;
+  try { cf.audio2.currentTime = audio.currentTime || 0; } catch (e) { /* ещё не готово */ }
+  if (!cf.source) {
+    cf.source = fx.ctx.createMediaElementSource(cf.audio2);
+    cf.gain = fx.ctx.createGain();
+    cf.gain.gain.value = 0;
+    cf.source.connect(cf.gain);
+    cf.gain.connect(fx.ctx.destination);
+  }
+  cf.blend = true;
+  // Позиция целевого трека в order — её использует playAt; заодно guard в playAt
+  cf.blendPos = state.pos + 1 < state.order.length ? state.pos + 1 : -1;
+  // Хвост играет на полном уровне, пока основной уже escalate на новый трек
+  const span = Math.max(0.4, settings.crossfade);
+  cf.gain.gain.cancelScheduledValues(t);
+  cf.gain.gain.setValueAtTime(1, t);
+  cf.gain.gain.linearRampToValueAtTime(0.0001, t + span);
+  // Хостинг: главный элемент мгновенно переходит на новый источник — его гейном
+  // мы управляем из loadSource (fade-in). Хвост сам заглушится: убираем следы.
+  cf.timer = setTimeout(() => {
+    if (cf.blend) { cf.blend = false; cf.blendPos = -1; }
+    if (cf.audio2) { try { cf.audio2.pause(); } catch (e) {} }
+    restoreFadeGain();
+  }, (span + 0.6) * 1000);
+  return true;
+}
+
+function crossfadeTick() {
+  const CF = Number(settings.crossfade) || 0;
+  if (CF <= 0 || cf.blend || isSeeking) return;
+  if (!state.current || state.repeat === 'one') return;
+  const remain = audio.duration - audio.currentTime;
+  if (!isFinite(remain) || remain <= 0) return;
+  if (remain > CF) return;
+  // Перекрытие имеет смысл только когда есть куда переходить
+  const next = nextPos();
+  if (next === -1 || next === state.pos) return;
+  // Момент переключения: хвостовой гейн продолжает старый трек, основной
+  // элемент сразу уходит под новый источник (fade-in делает loadSource)
+  if (!cfStartTail()) return; // нет Web Audio — остаётся обычный ended-переход
+  playAt(next);
+}
+
+// ---------------------------------------------------------------- Настройки UI
+
+function fmtCacheValue(mb) {
+  return mb >= 1024 ? `${Math.round(mb / 102) / 10} ГБ` : `${mb} МБ`;
+}
+
+async function refreshCacheStats() {
+  try {
+    const res = await ipcRenderer.invoke('cache:stats');
+    const used = res && res.success ? res.data : null;
+    if (used && typeof used.bytes === 'number') {
+      const mb = Math.round(used.bytes / 1048576);
+      const limitMb = Math.round((used.limitBytes || 0) / 1048576);
+      $('s-cache-used').textContent = used.count
+        ? `Занято ${mb >= 1024 ? Math.round(mb / 102) / 10 + ' ГБ' : mb + ' МБ'} из ${fmtCacheValue(limitMb)} · треков: ${used.count}`
+        : `Пусто · лимит ${fmtCacheValue(limitMb)}`;
+    }
+  } catch (e) { /* панель работает и без статистики */ }
+}
+
+function fillSettingsUI() {
+  $('s-crossfade').value = settings.crossfade;
+  $('s-crossfade-v').textContent = settings.crossfade > 0 ? `${settings.crossfade} с` : 'Выкл';
+  $('s-normalize').checked = settings.normalize;
+  $('s-bass').value = settings.bassBoost;
+  $('s-bass-v').textContent = `${settings.bassBoost} дБ`;
+  $('s-surround').checked = settings.surround;
+  $('s-fade').checked = settings.fadePause;
+  $('s-cache').value = settings.cacheLimitMB;
+  $('s-cache-v').textContent = fmtCacheValue(settings.cacheLimitMB);
+  refreshCacheStats();
+}
+
+function openSettings() {
+  fillSettingsUI();
+  $('settings-backdrop').classList.remove('hidden');
+}
+
+function closeSettings() {
+  $('settings-backdrop').classList.add('hidden');
+}
+
+function applyAllSettings() {
+  applyFx();
+  saveSettings();
+}
+
+function bindSettingsUI() {
+  $('btn-settings').addEventListener('click', openSettings);
+  $('settings-close').addEventListener('click', closeSettings);
+  $('settings-done').addEventListener('click', closeSettings);
+  $('settings-backdrop').addEventListener('mousedown', (e) => {
+    if (e.target === $('settings-backdrop')) closeSettings();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !$('settings-backdrop').classList.contains('hidden')) closeSettings();
+  });
+
+  // Воспроизведение
+  $('s-crossfade').addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    settings.crossfade = v;
+    $('s-crossfade-v').textContent = v > 0 ? `${v} с` : 'Выкл';
+    applyAllSettings();
+  });
+
+  $('s-normalize').addEventListener('change', (e) => {
+    settings.normalize = e.target.checked;
+    applyAllSettings();
+    toast(settings.normalize ? 'Нормализация громкости включена' : 'Нормализация громкости выключена');
+  });
+
+  $('s-bass').addEventListener('input', (e) => {
+    settings.bassBoost = Number(e.target.value);
+    $('s-bass-v').textContent = `${settings.bassBoost} дБ`;
+    applyAllSettings();
+  });
+
+  $('s-surround').addEventListener('change', (e) => {
+    settings.surround = e.target.checked;
+    applyAllSettings();
+    toast(settings.surround ? 'Surround включён' : 'Surround выключен');
+  });
+
+  $('s-fade').addEventListener('change', (e) => {
+    settings.fadePause = e.target.checked;
+    applyAllSettings();
+  });
+
+  // Служебное
+  $('s-cache').addEventListener('input', (e) => {
+    const mb = Number(e.target.value);
+    settings.cacheLimitMB = mb;
+    $('s-cache-v').textContent = fmtCacheValue(mb);
+    saveSettings();
+  });
+  $('s-cache').addEventListener('change', (e) => {
+    ipcRenderer.invoke('cache:limit', { bytes: Number(e.target.value) * 1048576 });
+    refreshCacheStats();
+  });
+
+  $('s-cache-clear').addEventListener('click', async () => {
+    const res = await ipcRenderer.invoke('cache:clear');
+    if (res && res.success) toast(`Кэш очищен (удалено: ${res.data && res.data.count || 0})`);
+    else toast('Не удалось очистить кэш');
+    localHits.clear(); //Скачать файлы больше нет — кэш-хиты непинную очистить
+    refreshCacheStats();
+  });
+
+  $('s-update').addEventListener('click', async () => {
+    const btn = $('s-update');
+    const out = $('s-update-state');
+    btn.disabled = true;
+    btn.textContent = 'Проверяем…';
+    try {
+      const res = await ipcRenderer.invoke('update:check', { force: true });
+      const info = res && res.success ? res.data : null;
+      if (!info) throw new Error((res && res.error) || 'Нет ответа');
+      if (info.error) out.textContent = 'Ошибка: ' + info.error;
+      else if (info.updateAvailable) out.textContent = `Доступна версия ${info.latest} — баннер вверху`;
+      else out.textContent = `Установлена последняя (v${info.current})`;
+    } catch (err) {
+      out.textContent = 'Ошибка: ' + err.message;
+    }
+    btn.disabled = false;
+    btn.textContent = 'Проверить';
+  });
+
+  $('s-reset').addEventListener('click', () => {
+    settings = Object.assign({}, DEFAULT_SETTINGS);
+    saveSettings();
+    applyFx();
+    ipcRenderer.invoke('cache:limit', { bytes: settings.cacheLimitMB * 1048576 }).catch(() => {});
+    fillSettingsUI();
+    toast('Настройки сброшены');
+  });
+}
+
+bindSettingsUI();
 
 function buildEqUI() {
   const bands = $('eq-bands');
@@ -2262,10 +2839,17 @@ audio.addEventListener('timeupdate', () => {
   seekBar.value = (audio.currentTime / audio.duration) * 1000;
   $('time-current').textContent = formatTime(Math.floor(audio.currentTime));
   $('time-total').textContent = formatTime(Math.floor(audio.duration));
+  // Кроссфейд-переход по времени: незадолго до конца трека
+  crossfadeTick();
 });
 
 function applyVolume() {
   audio.volume = Number(volumeBar.value);
+  // Теневой хвост кроссфейда слышен вне графа EQ — держим его на той же громкости
+  if (cf.audio2) {
+    cf.audio2.volume = audio.volume;
+    cf.audio2.muted = audio.muted;
+  }
   const muted = audio.muted || audio.volume === 0;
   btnMute.textContent = muted ? '🔇' : audio.volume < 0.5 ? '🔉' : '🔊';
   btnMute.setAttribute('aria-label', audio.muted ? 'Включить звук' : 'Выключить звук');

@@ -1,2 +1,16 @@
+# Node
 node_modules/
+npm-debug.log*
+
+# Сборки и артефакты electron-builder / packager
 dist/
+out/
+
+# Локальные пользовательские данные (нигде не хранится в репозитории)
+*.local
+.DS_Store
+Thumbs.db
+
+# Служебное
+builder-debug.yml
+builder-effective-config.yaml

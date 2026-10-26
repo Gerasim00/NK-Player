@@ -500,18 +500,21 @@ async function resolveUrls(ses, reloadIds, { background = false } = {}) {
 
 // Самозалитые треки ВК конвертирует в HLS по первому запросу: первый холодный
 // сегмент занимает 15-40 секунд (очередь транскода), повторный — миллисекунды.
-// Фоновая загрузка начала трека заставляет ВК подготовить сегменты заранее.
-async function warmSegments(ses, urls, { timeout = 45000 } = {}) {
-  let warmed = 0;
-  const details = [];
-  for (const url of urls) {
-    if (typeof url !== 'string' || !url.startsWith('https://')) continue;
+// Фоновые запросы стартовых байтов заставляют ВК подготовить сегменты заранее.
+// Прогрев идёт параллельно (concurrency, 4 соединения), треки приходят уже в
+// порядке приоритета: сначала те, что играют/после текущего.
+async function warmSegments(ses, items, { timeout = 45000, concurrency = 4, cap = 120 } = {}) {
+  const list = (Array.isArray(items) ? items : [])
+    .filter((it) => it && typeof it.url === 'string' && it.url.startsWith('https://'))
+    .slice(0, cap);
+  const details = new Array(list.length);
+  async function warmOne(item) {
     try {
-      const res = await ses.fetch(url, { signal: AbortSignal.timeout(timeout) });
-      if (!res.ok) { details.push({ status: res.status }); continue; }
+      const res = await ses.fetch(item.url, { signal: AbortSignal.timeout(timeout) });
+      if (!res.ok) return { status: res.status };
       const text = await res.text();
-      if (!text.includes('#EXTM3U')) { details.push({ status: 'not-m3u8' }); continue; }
-      const base = url.split('/').slice(0, -1).join('/');
+      if (!text.includes('#EXTM3U')) return { status: 'not-m3u8' };
+      const base = item.url.split('/').slice(0, -1).join('/');
       const segs = text.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#')).slice(0, 2);
       // Сегменты ждём до готовности, стартовые байты — дёшево (<64 КБ),
       // зато после этого ВК отдаёт их мгновенно в плеере
@@ -524,12 +527,20 @@ async function warmSegments(ses, urls, { timeout = 45000 } = {}) {
           if (sr.body && sr.body.cancel) sr.body.cancel().catch(() => {});
         } catch (e) { /* холодный сегмент не успел — прогреется в фоне или при нажатии */ }
       }
-      warmed++;
-      details.push({ segsOk });
+      return { segsOk };
     } catch (e) {
-      details.push({ err: String((e && e.message) || e).slice(0, 60) });
+      return { err: String((e && e.message) || e).slice(0, 60) };
     }
   }
+  let next = 0;
+  async function worker() {
+    while (next < list.length) {
+      const i = next++;
+      details[i] = await warmOne(list[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, list.length) }, worker));
+  const warmed = details.filter((d) => d && d.segsOk !== undefined).length;
   return { warmed, details };
 }
 

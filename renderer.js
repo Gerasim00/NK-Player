@@ -1025,19 +1025,26 @@ function holoSample() {
     for (let x = 2; x < 418; x += 2) {
       const a = aAt(x, y);
       if (a < 18) continue;
-      let e = 0;
-      if (a < 145) {
-        if (Math.random() > 0.32) continue; // редкие точки «пушистой» границы
-        e = 0.72;
+      const l = lumAt ? lumAt(x, y) : 115;
+      const xa = Math.max(2, x - 3), xb = Math.min(417, x + 3);
+      const ya = Math.max(2, y - 3), yb = Math.min(517, y + 3);
+      // Два градиента: альфа — внешний край силуэта; яркость — внутренние
+      // границы анатомии (пряди шерсти, провалы между лапами, изгиб бёдер)
+      const gradA = Math.abs(aAt(xb, y) - aAt(xa, y)) + Math.abs(aAt(x, yb) - aAt(x, ya));
+      const gradL = Math.abs(lumAt(xb, y) - lumAt(xa, y)) +
+        Math.abs(lumAt(x, yb) - lumAt(x, ya));
+      let e = Math.max(Math.min(1, gradA / 340), Math.min(1, gradL / 260));
+      if (a < 145) { // мягкая «пушистая» кайма силуэта — реже
+        if (e < 0.5 && Math.random() > 0.32) continue;
+        e = Math.max(e, 0.72);
       }
-      const grad = Math.abs(aAt(Math.min(417, x + 3), y) - aAt(Math.max(2, x - 3), y)) +
-        Math.abs(aAt(x, Math.min(517, y + 3)) - aAt(x, Math.max(2, y - 3)));
-      e = Math.max(e, Math.min(1, grad / 340));
-      // Слои анатомии: 0 — тело (мягкая дымка), 1 — контур/шерсть (край и
-      // прожилки brighter), 2 — искры (глаза, нос, усы, подушечки лап).
-      // Яркость исходника запечена в R-канал маски (см. make-cat-sil2.js)
-      const l = lumAt ? lumAt(x, y) : 0;
-      const ly = l >= 215 ? 2 : (e >= 0.55 ? 1 : 0);
+      // Плотность повторяет яркость генерата: светлые пряди — чаще,
+      // тёмные провалы между лапами — реже → части тела различимы
+      if (e < 0.45) {
+        const keep = Math.min(1, 0.16 + l / 200);
+        if (Math.random() > keep) continue;
+      }
+      const ly = l >= 215 ? 2 : (e >= 0.5 ? 1 : 0);
       const rg = ly === 2 ? 2 + Math.random() * 7 :
         ly === 1 ? 5 + Math.random() * 15 : 8 + Math.random() * 30;
       const v = ly === 2 ? 0.05 + Math.random() * 0.13 :
@@ -1045,7 +1052,7 @@ function holoSample() {
       const s = ly === 2 ? 1.9 + Math.random() * 1.4 :
         (e > 0.5 ? 1.5 : 1) + Math.random() * 1.1;
       all.push({
-        x, y, e, ly,
+        x, y, e, ly, l,
         f: 0.5 + Math.random() * 1.1,
         ph: Math.random() * 6.283,
         v,
@@ -1152,8 +1159,9 @@ function holoFrame(now) {
       ctx.fillStyle = HOLO_HOT[(a * 19) | 0];
       ctx.fillRect(x, y, p.s, p.s);
     } else {
-      // Тело: мягкая дымка, держит объём
-      let a = (0.08 + p.e * 0.24) * pulse;
+      // Тело: дымка в тоне генерата — светлые пряди ярче, тёмные провалы
+      // (между лапами, под грудью) темнее → анатомия читается изнутри
+      let a = (0.05 + (p.l / 255) * 0.34) * pulse;
       if (Math.random() < 0.05) a += Math.random() * 0.18;
       a += scanGlow * 0.16;
       if (a > 1) a = 1;

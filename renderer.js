@@ -724,6 +724,8 @@ async function openView(view) {
   document.querySelector('.main-header').classList.toggle('hidden', homeMode);
   document.querySelector('.list-head').classList.toggle('hidden', homeMode);
   tracksContainer.classList.toggle('hidden', homeMode);
+  // Тяжёлый цикл голограммы живёт только пока открыта главная
+  if (homeMode) startHoloCat(); else stopHoloCat();
   $('btn-import').classList.toggle('hidden', view.type !== 'local');
   // Свой плейлист можно очистить только из его же экрана — кнопка видна там
   $('btn-del-playlist').classList.toggle('hidden', view.type !== 'local-playlist');
@@ -865,6 +867,181 @@ $('nav-search').addEventListener('click', () => {
 });
 $('nav-queue').addEventListener('click', () => openView({ type: 'queue' }));
 $('nav-home').addEventListener('click', () => openView({ type: 'home' }));
+
+// ---------------------------------------------------------------- Живая голограмма кота (NK-Wave)
+
+// Силуэт читаем из разметки (#home-cat-body) и превращаем в поле светящихся
+// частиц на canvas: они всплывают внутри тела, мерцают, ярче «искрят» на краях,
+// пронизываются скан-полосой, изредка сбиваются горизонтальными помехами-срезами,
+// а вся сцена чуть наклоняется за курсором (параллакс). Единицы координат —
+// viewBox 420×520, в кадре рисуем прямо в них через setTransform.
+const HOLO = {
+  canvas: null, ctx: null, wrap: null, parts: [],
+  inited: false, running: false, raf: 0, t0: 0,
+  k: 1, glitch: null,
+  tilt: { x: 0, y: 0, tx: 0, ty: 0 }
+};
+
+// Цветовые таблицы по корзинам яркости: без строковых склеек в кадре
+const HOLO_COLD = [], HOLO_HOT = [];
+for (let i = 0; i < 20; i++) {
+  const a = (i / 19).toFixed(3);
+  HOLO_COLD.push(`rgba(86,146,255,${a})`);
+  HOLO_HOT.push(`rgba(168,222,255,${a})`);
+}
+
+function holoSample() {
+  const pathEl = $('home-cat-body');
+  if (!pathEl) return [];
+  const off = document.createElement('canvas');
+  off.width = 420; off.height = 520;
+  const octx = off.getContext('2d', { willReadFrequently: true });
+  // Мягкий край даёт градиентную кайму: из неё берём «волоски» вдоль контура
+  octx.filter = 'blur(1.4px)';
+  octx.fillStyle = '#fff';
+  octx.fill(new Path2D(pathEl.getAttribute('d')));
+  octx.filter = 'none';
+  const img = octx.getImageData(0, 0, 420, 520).data;
+  const aAt = (x, y) => img[(y * 420 + x) * 4 + 3];
+
+  const all = [];
+  for (let y = 2; y < 518; y += 2) {
+    for (let x = 2; x < 418; x += 2) {
+      const a = aAt(x, y);
+      if (a < 18) continue;
+      let e = 0;
+      if (a < 145) {
+        if (Math.random() > 0.32) continue; // редкие точки «пушистой» границы
+        e = 0.72;
+      }
+      const grad = Math.abs(aAt(Math.min(417, x + 3), y) - aAt(Math.max(2, x - 3), y)) +
+        Math.abs(aAt(x, Math.min(517, y + 3)) - aAt(x, Math.max(2, y - 3)));
+      e = Math.max(e, Math.min(1, grad / 340));
+      all.push({
+        x, y, e,
+        f: 0.5 + Math.random() * 1.1,
+        ph: Math.random() * 6.283,
+        v: 0.16 + Math.random() * 0.36,
+        o: Math.random() * 520,
+        s: (e > 0.5 ? 1.5 : 1) + Math.random() * 1.1
+      });
+    }
+  }
+  // Прореживание: частиц ^2400 — цикл остаётся дешёвым даже на слабых машинах
+  const TARGET = 2400;
+  if (all.length > TARGET) {
+    const stride = all.length / TARGET;
+    const out = new Array(TARGET);
+    for (let i = 0; i < TARGET; i++) out[i] = all[(i * stride) | 0];
+    return out;
+  }
+  return all;
+}
+
+function holoResize() {
+  const el = HOLO.canvas;
+  const w = el.clientWidth || el.parentElement.clientWidth;
+  if (!w) return;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  el.width = Math.round(w * dpr);
+  el.height = Math.round(w * (520 / 420) * dpr);
+  HOLO.k = el.width / 420;
+  HOLO.ctx.setTransform(HOLO.k, 0, 0, HOLO.k, 0, 0);
+}
+
+function initHolo() {
+  if (HOLO.inited) return true;
+  HOLO.canvas = $('home-cat-canvas');
+  HOLO.wrap = $('holo-tilt');
+  if (!HOLO.canvas || !HOLO.wrap) return false;
+  HOLO.ctx = HOLO.canvas.getContext('2d');
+  HOLO.parts = holoSample();
+  holoResize();
+  HOLO.inited = !!HOLO.ctx && HOLO.parts.length > 0;
+  if (HOLO.inited) {
+    new ResizeObserver(() => { if (HOLO.inited) holoResize(); }).observe(HOLO.canvas);
+  }
+  return HOLO.inited;
+}
+
+function holoFrame(now) {
+  HOLO.raf = requestAnimationFrame(holoFrame);
+  const t = (now - HOLO.t0) / 1000;
+  const ctx = HOLO.ctx;
+  ctx.clearRect(0, 0, 420, 520);
+  ctx.globalCompositeOperation = 'lighter';
+
+  // Помехи-срезы: раз в несколько секунд полоса фигуры сдвигается вбок
+  if (!HOLO.glitch && Math.random() < 0.004) {
+    HOLO.glitch = {
+      y: 60 + Math.random() * 380,
+      h: 8 + Math.random() * 26,
+      dx: (Math.random() * 2 - 1) * 7,
+      until: t + 0.1 + Math.random() * 0.12
+    };
+  } else if (HOLO.glitch && t > HOLO.glitch.until) {
+    HOLO.glitch = null;
+  }
+
+  const scan = ((t * 34) % 600) - 40;         // скан-полоса сверху вниз
+  const pulse = 0.82 + 0.18 * Math.sin(t * 1.6); // общее дыхание яркости
+  const parts = HOLO.parts;
+  const gl = HOLO.glitch;
+
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    // Всплытие внутри объёма: частица уходит вверх, дойдя до макушки — снизу новая
+    let y = p.y - ((t * 12 * p.v + p.o) % 520);
+    if (y < 0) y += 520;
+    const x = p.x + Math.sin(t * p.f * 1.6 + p.ph) * 1.9 +
+      (gl && y > gl.y && y < gl.y + gl.h ? gl.dx : 0);
+    let a = (0.15 + p.e * 0.55) * pulse;
+    if (Math.random() < 0.08) a += Math.random() * 0.25; // точечные искры
+    const ds = Math.abs(y - scan);
+    if (ds < 26) a += (1 - ds / 26) * 0.45;
+    if (a > 1) a = 1;
+    ctx.fillStyle = (p.e > 0.55 ? HOLO_HOT : HOLO_COLD)[(a * 19) | 0];
+    ctx.fillRect(x, y, p.s, p.s);
+  }
+
+  // Наклон сцены за курсором (вглубь, с инерцией)
+  const tl = HOLO.tilt;
+  tl.x += (tl.tx - tl.x) * 0.07;
+  tl.y += (tl.ty - tl.y) * 0.07;
+  HOLO.wrap.style.transform = `rotateY(${tl.y.toFixed(2)}deg) rotateX(${tl.x.toFixed(2)}deg)`;
+}
+
+function startHoloCat() {
+  if (!initHolo()) return;
+  holoResize();
+  if (HOLO.running) return;
+  HOLO.running = true;
+  if (!HOLO.t0) HOLO.t0 = performance.now();
+  HOLO.raf = requestAnimationFrame(holoFrame);
+}
+
+function stopHoloCat() {
+  if (!HOLO.running) return;
+  cancelAnimationFrame(HOLO.raf);
+  HOLO.running = false;
+  HOLO.glitch = null;
+  if (HOLO.ctx) HOLO.ctx.clearRect(0, 0, 420, 520);
+  HOLO.tilt.tx = 0; HOLO.tilt.ty = 0;
+}
+
+// Параллакс: слушаем сцену целиком, амплитуды малые — эффект вглубь
+$('home-view').addEventListener('pointermove', (e) => {
+  if (!HOLO.running) return;
+  const r = $('home-view').getBoundingClientRect();
+  const nx = (e.clientX - r.left) / Math.max(1, r.width) - 0.5;
+  const ny = (e.clientY - r.top) / Math.max(1, r.height) - 0.5;
+  HOLO.tilt.ty = nx * 10;
+  HOLO.tilt.tx = ny * 8;
+});
+$('home-view').addEventListener('pointerleave', () => {
+  HOLO.tilt.tx = 0;
+  HOLO.tilt.ty = 0;
+});
 
 // ---------------------------------------------------------------- Главная (NK-Wave)
 

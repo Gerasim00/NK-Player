@@ -610,7 +610,21 @@
       user-select: none;
     }
     .home-cat { position: relative; width: min(46vh, 420px); flex: none; }
-    .home-cat svg { width: 100%; height: auto; display: block; }
+    .holo-tilt { position: absolute; inset: 0; will-change: transform; }
+    #home-cat-svg {
+      width: 100%; height: auto; display: block;
+      animation: holoBreath 5.2s ease-in-out infinite;
+      transform-origin: 50% 78%;
+    }
+    @keyframes holoBreath {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.016) translateY(-0.6%); }
+    }
+    #home-cat-canvas {
+      position: absolute; inset: 0; width: 100%; height: 100%;
+      pointer-events: none;
+      filter: drop-shadow(0 0 3px #2f7bffaa) drop-shadow(0 0 16px #2f7bff44);
+    }
     .cat-aura { animation: homeAura 4.5s ease-in-out infinite alternate; }
     @keyframes homeAura { from { opacity: .55; } to { opacity: .95; } }
     .home-ray { animation: homeRay 6s ease-in-out infinite alternate; }
@@ -967,7 +981,8 @@
       <section id="home-view" class="hidden" aria-label="Главная страница">
         <div class="home-stage">
           <div class="home-cat">
-            <svg viewBox="0 0 420 520" role="img" aria-hidden="true">
+            <div class="holo-tilt" id="holo-tilt">
+            <svg id="home-cat-svg" viewBox="0 0 420 520" role="img" aria-hidden="true">
               <defs>
                 <radialGradient id="hg-aura" cx="50%" cy="50%" r="50%">
                   <stop offset="0%" stop-color="#2f7bff" stop-opacity=".55"/>
@@ -1037,7 +1052,7 @@
               </g>
 
               <!-- Кот: чёткий контур -->
-              <path d="M210 168 C167 168 142 138 142 104 C142 72 168 46 210 46 C252 46 278 72 278 104 C278 138 253 168 210 168 Z
+              <path id="home-cat-body" d="M210 168 C167 168 142 138 142 104 C142 72 168 46 210 46 C252 46 278 72 278 104 C278 138 253 168 210 168 Z
                 M158 64 L136 16 L196 44 Z M262 64 L284 16 L224 44 Z
                 M210 176 C148 192 110 254 102 334 C96 396 116 448 158 464 L262 464 C304 448 324 396 318 334 C310 254 272 192 210 176 Z
                 M156 388 C156 380 162 374 170 374 L184 374 C192 374 198 380 198 388 L198 448 C198 456 192 462 184 462 L170 462 C162 462 156 456 156 448 Z
@@ -1080,6 +1095,8 @@
                 <circle class="home-dot" cx="330" cy="446" r="1.6" style="animation-delay:-3.1s"/>
               </g>
             </svg>
+            <canvas id="home-cat-canvas"></canvas>
+            </div>
           </div>
 
           <button id="home-play" class="home-play" title="Слушать" aria-label="Включить музыку">

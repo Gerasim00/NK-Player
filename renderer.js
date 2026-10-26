@@ -60,7 +60,8 @@ const state = {
   shuffle: false,
   repeat: 'off',              // off | all | one
   playToken: 0,
-  retried: false
+  retried: false,
+  smart: false                // идёт ли очередь, собранная умным режимом
 };
 
 let hls = null;
@@ -1276,14 +1277,16 @@ function updateHomePlay() {
 }
 
 $('home-play').addEventListener('click', async () => {
-  // Холодный старт: очередь ещё не собрана — подтягиваем «Мою музыку» и играем
-  if (!state.current && !state.displayed.length) {
-    await openView({ type: 'my' });
-    if (!state.displayed.length) return;
+  // Умный режим: без играющего трека строим умную очередь.
+  // Холодный старт — из любимых артистов + исследование библиотеки
+  if (!state.current) {
+    await startSmartQueue(null);
+    return;
   }
   togglePlay();
 });
-$('home-settings').addEventListener('click', openSettings);
+    $('home-settings').addEventListener('click', openSmartSettings);
+$('home-settings').title = 'Настройки умного режима';
 audio.addEventListener('play', updateHomePlay);
 audio.addEventListener('pause', updateHomePlay);
 audio.addEventListener('ended', updateHomePlay);
@@ -1608,6 +1611,11 @@ function renderTracks() {
     ? all.filter((t) => `${t.artist} ${t.title}`.toLowerCase().includes(q))
     : all.slice();
 
+  // «Скрывать дизлайки в списках»: полностью убираем их из любой выдачи
+  if (smart.knobs.hideDisliked) {
+    state.displayed = state.displayed.filter((t) => smartFav(t) !== -1);
+  }
+
   // В очереди номер строки не совпадает с позицией в order, если включён фильтр,
   // поэтому запоминаем настоящие позиции по самим объектам треков.
   state.orderOf = new Map();
@@ -1670,6 +1678,7 @@ function createTrackRow(track, idx) {
     row.title = 'Трек недоступен';
   }
   if (state.current && state.current.id === track.id) row.classList.add('active');
+  if (smartFav(track) === -1) row.classList.add('disliked');
 
   const num = document.createElement('div');
   num.className = 'track-num';
@@ -1736,6 +1745,36 @@ function createTrackRow(track, idx) {
     openAddToPlaylist(e, track);
   });
   actions.appendChild(plBtn);
+
+  // ---- Умный режим: лайк / дизлайк прямо в строке
+  const likeBtn = document.createElement('button');
+  likeBtn.className = 'track-act like' + (smartFav(track) === 1 ? ' on' : '');
+  likeBtn.title = 'Любимый трек';
+  likeBtn.setAttribute('aria-label', 'Любимый трек');
+  likeBtn.textContent = '♥';
+  likeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const on = smartFav(track) !== 1;
+    smartToggleFav(track, on);
+    likeBtn.classList.toggle('on', on);
+    toast(on ? '♥ «' + track.title + '» — любимый' : '♥ снят');
+  });
+  actions.appendChild(likeBtn);
+
+  const dislikeBtn = document.createElement('button');
+  dislikeBtn.className = 'track-act dislike' + (smartFav(track) === -1 ? ' on' : '');
+  dislikeBtn.title = 'Не нравится — не будет играть в умном режиме';
+  dislikeBtn.setAttribute('aria-label', 'Не нравится');
+  dislikeBtn.textContent = '👎';
+  dislikeBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const on = smartFav(track) !== -1;
+    smartToggleDislike(track, on);
+    dislikeBtn.classList.toggle('on', on);
+    row.classList.toggle('disliked', on);
+    toast(on ? '👎 «' + track.title + '» — не нравится' : 'Трек возвращён в умный режим');
+  });
+  actions.appendChild(dislikeBtn);
 
   // Удаление из конкретного плейлиста — только когда он открыт
   const cur = state.view;
@@ -1805,6 +1844,17 @@ function openTrackMenu(e, track) {
   if (track.artist && track.artist !== '—') {
     frag.appendChild(ctxItem(`Все треки: ${track.artist}`, '♪', () => openArtist(track.artist)));
   }
+
+  // Умный режим: лайк/дизайкл из меню — для тех, кто не пользуется хоткнопками
+  const st = smartFav(track);
+  frag.appendChild(ctxItem(st === -1 ? 'Вернуть в умный режим' : 'Не нравится (без умного режима)', '✖', () => {
+    smartToggleDislike(track, st !== -1);
+    renderTracks();
+  }));
+  frag.appendChild(ctxItem(st === 1 ? 'Убрать из любимых' : 'Любимый трек', '♥', () => {
+    smartToggleFav(track, st !== 1);
+    renderTracks();
+  }));
 
   const cur = state.view;
   if (cur.type === 'local-playlist') {
@@ -2172,6 +2222,7 @@ function buildOrder(startIndex) {
 // startIndex === null — начать со случайного трека (для перемешивания)
 function startQueue(list, startIndex) {
   state.queue = list.slice();
+  state.smart = false; // умный режим сбрасывается любым ручным стартом очереди
   buildOrder(startIndex);
   updateQueueNav();
   playAt(state.pos);
@@ -2340,12 +2391,17 @@ async function playAt(pos, { force = false, skipped = 0, waits = 0 } = {}) {
   const track = state.queue[state.order[pos]];
   if (!track) return;
 
+  // Умный режим: закрыть сессию предыдущего трека и открыть новую.
+  // force-ретрай того же трека сессией не считать
+  if (!(force && track === state.current)) smartFinishSession(false);
+
   const token = ++state.playToken;
   // Кроссфейд: это целевой переход — теневой хвост продолжает дотягивать старый
   // трек, иначе переход (например, ручной клик) просто гасит его.
   if (!(cf.blend && cf.blendPos === pos)) cfCleanup();
   state.pos = pos;
   state.current = track;
+  smartOpenSession(track);
   if (!force) state.retried = false;
   updateNowPlaying();
   highlightCurrent();
@@ -2523,11 +2579,15 @@ audio.addEventListener('loadedmetadata', () => {
 });
 
 audio.addEventListener('ended', () => {
+  smartFinishSession(true);
   if (state.repeat === 'one') {
     audio.currentTime = 0;
     audio.play().catch(() => {});
+    smartOpenSession(state.current); // сессия повторного прослушивания продолжается
     return;
   }
+  // Умный режим: очередь кончилась — нарастить ещё одной порцией подборки
+  if (state.smart && nextPos() === -1) smartExtendQueue();
   playNext();
 });
 
@@ -3563,5 +3623,627 @@ function pluralTracks(n) {
   return `${n} ${word}`;
 }
 
-// Только для отладки из тестовых скриптов
-window.__nk = { state, eq, audio, ensureEqGraph };
+// Только для отладки из тестовых скриптов (расширяется в конце модуля умного режима)
+
+// ---------------------------------------------------------------- Умный режим (тестовая версия)
+//
+// Рекомендации на основе своей библиотеки + локальных файлов. Никаких серверов:
+// пользовательская статистика прослушиваний копится в localStorage по ключу
+// «артист + название» (устойчивее VK-id), предпочтения — ручными лайками/дизлайками.
+// Скоринг v1: фавориты + распад интереса (30 дней) + штрафы за скип/усталость
+// артиста + доля «нового» + реакция на время суток. Ограничение разнообразия
+// (не больше N треков одного артиста подряд) поверх скоринга.
+
+const SMART_KEY = 'nk.smart.v1';
+const SMART_STATS_KEY = 'nk.smart.stats.v1';
+const SMART_HALF = 30 * 864e5; // период полураспада интереса (30 дней)
+const SMART_CD = [0, 9e5, 36e5, 864e5]; // кулдаун артиста: нет / 15 мин / 1 ч / день
+
+function smartDefaults() {
+  return {
+    artists: [],       // любимые артисты (как в библиотеке)
+    favTracks: [],     // любимые треки {artist, title}
+    disliked: [],      // непонравившиеся треки {artist, title}
+    hiddenArtists: [], // исключённые артисты (строки)
+    knobs: { explore: 20, cap: 2, cooldown: 1, tod: true, hideDisliked: false }
+  };
+}
+
+let smart = smartDefaults();
+try {
+  const saved = JSON.parse(localStorage.getItem(SMART_KEY) || 'null');
+  if (saved && typeof saved === 'object') Object.assign(smart, saved);
+} catch (e) { /* ок — работаем на дефолтах */ }
+smart.knobs = Object.assign(smartDefaults().knobs, smart.knobs || {});
+['artists', 'favTracks', 'disliked', 'hiddenArtists'].forEach((k) => {
+  if (!Array.isArray(smart[k])) smart[k] = [];
+});
+
+function smartSave() {
+  try { localStorage.setItem(SMART_KEY, JSON.stringify(smart)); } catch (e) { /* ок */ }
+}
+
+// --- Статистика прослушиваний/скипов ---
+let smartStats = null;
+try { smartStats = JSON.parse(localStorage.getItem(SMART_STATS_KEY) || 'null'); } catch (e) { smartStats = null; }
+if (!smartStats || typeof smartStats !== 'object' || !smartStats.tr || !smartStats.ar) {
+  smartStats = { tr: {}, ar: {} };
+}
+
+let smartStatsTimer = null;
+function smartStatsSave() {
+  clearTimeout(smartStatsTimer);
+  smartStatsTimer = setTimeout(() => {
+    try { localStorage.setItem(SMART_STATS_KEY, JSON.stringify(smartStats)); } catch (e) { /* ок */ }
+  }, 1500);
+}
+
+function nameKey(t) {
+  return `${normalizeArtist(t.artist)}\u0000${String(t.title || '').toLowerCase().trim()}`;
+}
+function prefKey(x) { return `${normalizeArtist(x.artist)}\u0000${String(x.title || '').toLowerCase().trim()}`; }
+
+function smartTrackStat(k) {
+  return smartStats.tr[k] || (smartStats.tr[k] = { p: 0, s: 0, ts: 0 });
+}
+function smartArtistStat(n) {
+  return smartStats.ar[n] || (smartStats.ar[n] = { p: 0, s: 0, ts: 0, tod: [0, 0, 0, 0, 0, 0, 0, 0] });
+}
+
+function smartFav(track) {
+  if (!track) return 0;
+  const k = nameKey(track);
+  if (smart.favTracks.some((x) => prefKey(x) === k)) return 1;
+  if (smart.disliked.some((x) => prefKey(x) === k)) return -1;
+  return 0;
+}
+function smartIsFavArtist(track) {
+  const n = normalizeArtist(track.artist);
+  if (!n) return false;
+  return smart.artists.some((a) => normalizeArtist(a) === n || sameArtist(a, track.artist));
+}
+function smartHiddenArtist(track) {
+  const n = normalizeArtist(track.artist);
+  if (!n) return false;
+  return smart.hiddenArtists.some((h) => normalizeArtist(h) === n);
+}
+
+function smartToggleFav(track, on) {
+  const k = nameKey(track);
+  smart.favTracks = smart.favTracks.filter((x) => prefKey(x) !== k);
+  if (on) {
+    smart.favTracks.unshift({ artist: track.artist, title: track.title });
+    smart.disliked = smart.disliked.filter((x) => prefKey(x) !== k);
+  }
+  smartSave();
+}
+
+function smartToggleDislike(track, on) {
+  const k = nameKey(track);
+  smart.disliked = smart.disliked.filter((x) => prefKey(x) !== k);
+  if (on) {
+    smart.disliked.unshift({ artist: track.artist, title: track.title });
+    smart.favTracks = smart.favTracks.filter((x) => prefKey(x) !== k);
+  }
+  smartSave();
+}
+
+function smartTodBucket() {
+  return Math.floor((new Date().getHours()) / 3); // 0..7
+}
+
+// --- Сессии прослушивания: закрытие при переходе на следующий трек/конце ---
+let smartSession = null;
+
+function smartOpenSession(track) {
+  smartSession = track ? {
+    k: nameKey(track),
+    artist: normalizeArtist(track.artist),
+    bucket: smartTodBucket()
+  } : null;
+}
+
+function smartFinishSession(ended) {
+  const s = smartSession;
+  smartSession = null;
+  if (!s) return;
+  const dur = isFinite(audio.duration) && audio.duration > 1 ? audio.duration : 0;
+  const pos = ended ? dur : (audio.currentTime || 0);
+  if (!dur || pos <= 1) return; // неслышно игравший трек статистику не трогает
+  const frac = pos / dur;
+  const okPlay = ended || frac >= 0.6;    // дослушал до конца или больше 60%
+  const earlySkip = !ended && frac < 0.35; // ранний скип — сильный минус
+  const tr = smartTrackStat(s.k);
+  const ar = s.artist ? smartArtistStat(s.artist) : null;
+  if (ar) { ar.ts = Date.now(); tr.ts = ar.ts; }
+  if (okPlay) {
+    tr.p += 1;
+    if (ar) { ar.p += 1; ar.tod[s.bucket] += 1; }
+  } else if (earlySkip) {
+    tr.s += 1;
+    if (ar) ar.s += 1;
+  }
+  smartStatsSave();
+}
+
+// --- Скоринг ---
+function smartScore(t, now, bucket) {
+  const k = nameKey(t);
+  const tr = smartStats.tr[k];
+  const n = normalizeArtist(t.artist);
+  const ar = n ? smartStats.ar[n] : null;
+
+  let sc = 1;
+  const fav = smartFav(t);
+  if (fav === 1) sc += 3.2;                          // ручной лайк трека
+  if (smartIsFavArtist(t)) sc += 2.6;                // ручной выбор артиста
+
+  // Распад интереса: свежие прослушивания весят больше давних
+  const trW = tr ? tr.p * Math.exp(-Math.max(0, now - (tr.ts || now)) / SMART_HALF) : 0;
+  const arW = ar ? ar.p * Math.exp(-Math.max(0, now - (ar.ts || now)) / SMART_HALF) : 0;
+  sc += Math.min(2.2, trW * 1.1) + Math.min(1.6, arW * 0.8);
+
+  // Усталость артиста: играл недавно — мягкий минус (не блок)
+  const cd = SMART_CD[smart.knobs.cooldown] || 0;
+  if (ar && ar.ts && cd && now - ar.ts < cd) sc -= 4;
+
+  // Скип-рейсы
+  const trSkip = tr ? tr.s / Math.max(1, tr.p + tr.s) : 0;
+  const arSkip = ar ? ar.s / Math.max(1, ar.p + ar.s) : 0;
+  sc -= trSkip * 2.6 + arSkip * 1.4;
+
+  // Новичок: не игрался — бонус по ползунку «новое»
+  if (!tr) sc += 0.6 + smart.knobs.explore / 30;
+
+  // Время суток: артисты, которых обычно слушают в этот бакет часов — чуть выше
+  if (smart.knobs.tod && ar && ar.tod) {
+    const sum = ar.tod.reduce((acc, x) => acc + x, 0) || 1;
+    sc += Math.min(0.8, (ar.tod[bucket] / sum) * 2.4);
+  }
+
+  return sc + Math.random() * 0.55; // лёгкий джиттер против монотонных повторов
+}
+
+// --- Пул доступных треков (минус дизлайки и исключённые артисты) ---
+function smartPool(excludeKeys) {
+  const src = (state.myTracks && state.myTracks.length) ? state.myTracks : (state.localTracks || []);
+  return src.filter((t) => {
+    if (!(t.local || t.url || t.stream || t.reloadId)) return false;
+    if (smartHiddenArtist(t) || smartFav(t) === -1) return false;
+    if (excludeKeys) {
+      const k = nameKey(t);
+      if (excludeKeys.has(k)) return false;
+      excludeKeys.add(k);
+    }
+    return true;
+  });
+}
+
+// --- Сборка умной очереди ---
+function smartBuildQueue(seed, excludeKeys) {
+  const now = Date.now();
+  const bucket = smartTodBucket();
+  const pool = smartPool(excludeKeys);
+  const want = Math.min(pool.length, 40);
+  if (!want) return [];
+
+  const scored = pool
+    .map((t) => ({ t, k: nameKey(t), sc: smartScore(t, now, bucket) }))
+    .sort((x, y) => y.sc - x.sc);
+
+  // Доля «нового»: каждый N-й слот — обязательно неигранный трек
+  const novelEvery = smart.knobs.explore >= 5 ? Math.max(2, Math.round(100 / smart.knobs.explore)) : 0;
+  const unplayed = scored.filter((x) => !smartStats.tr[x.k]);
+  let up = 0;
+
+  const out = [];
+  const recentArtists = [];
+  const cap = Math.max(1, Math.min(4, smart.knobs.cap || 2));
+  const recentWindow = Math.max(1, cap - 1);
+
+  // Seed — если передан трек (например, играющий сейчас), он играет первым
+  if (seed) {
+    const sk = nameKey(seed);
+    const at = scored.findIndex((x) => x.k === sk);
+    if (at !== -1) {
+      out.push(scored[at].t);
+      recentArtists.push(normalizeArtist(scored[at].t.artist));
+      scored.splice(at, 1);
+    }
+  }
+
+  let guard = 0;
+  while (out.length < want && guard++ < want * 4) {
+    let item = null;
+
+    // Слот «нового»: неигранный трек без конфликта артиста
+    const novelSlot = novelEvery && out.length >= 1 && out.length % novelEvery === (novelEvery - 1);
+    if (novelSlot) {
+      let j = up;
+      while (j < unplayed.length) {
+        const cand = unplayed[j];
+        if (!recentArtists.slice(-recentWindow).includes(normalizeArtist(cand.t.artist))) {
+          item = cand;
+          up = j + 1;
+          break;
+        }
+        j++;
+      }
+    }
+
+    // Обычный проход по скорингу
+    if (!item) {
+      for (let j = 0; j < scored.length; j++) {
+        const cand = scored[j];
+        if (recentArtists.slice(-recentWindow).includes(normalizeArtist(cand.t.artist))) continue;
+        item = cand;
+        break;
+      }
+    }
+    if (!item) break;
+
+    scored.splice(scored.indexOf(item), 1);
+    out.push(item.t);
+    recentArtists.push(normalizeArtist(item.t.artist));
+  }
+  return out;
+}
+
+// --- Старт умного режима кнопкой NK-Wave ---
+async function startSmartQueue(seed) {
+  if (!state.myTracks) {
+    try { await loadMyTracks(); } catch (e) { state.myTracks = null; }
+  }
+  if (!state.myTracks || !state.myTracks.length) {
+    try { await loadLocalTracks(); } catch (e) { state.localTracks = null; }
+  }
+  const list = smartBuildQueue(seed, null);
+  if (!list.length) {
+    toast('Для умного режима нужна библиотека — войдите в ВК или добавьте свои файлы');
+    return false;
+  }
+
+  const cold = !smart.artists.length && !Object.keys(smartStats.tr).length;
+  smartSession = null;
+  state.smart = true;
+  startQueue(list, 0);
+  state.smart = true; // startQueue сбрасывает smart — ставим после него
+  toast(cold
+    ? 'Умный режим: смешал библиотеку — отметьте любимых артистов в настройках'
+    : 'Умный режим включён');
+  if (cold) openSmartSettings();
+  return true;
+}
+
+// Очередь кончилась — наростить ещё порцию (без повторов уже спланированного)
+function smartExtendQueue() {
+  const excludeKeys = new Set(state.queue.map((t) => nameKey(t)));
+  const list = smartBuildQueue(null, excludeKeys);
+  if (!list.length) {
+    state.smart = false;
+    return;
+  }
+  const base = state.queue.length;
+  for (const t of list) {
+    state.queue.push({ ...t });
+    state.order.push(base + state.queue.length - 1);
+  }
+  updateQueueNav();
+  if (state.view.type === 'queue') renderTracks();
+  toast('Умный режим: подобрал продолжение');
+}
+
+// --- Настройки умного режима ---
+const smartBackdrop = $('smart-backdrop');
+
+function openSmartSettings() {
+  smartBackdrop.classList.remove('hidden');
+  // Библиотека для поиска артистов/треков: подтянуть, если ещё не загружена
+  if (!state.myTracks) {
+    loadMyTracks().then(() => { smartRenderAll(); }).catch(() => { smartRenderAll(); });
+  }
+  smartRenderAll();
+}
+
+function smartRenderAll() {
+  smartRenderArtists();
+  smartRenderTracksTab();
+  smartRenderDislikes();
+  smartRenderKnobs();
+}
+
+$('smart-close').addEventListener('click', () => smartBackdrop.classList.add('hidden'));
+$('smart-done').addEventListener('click', () => smartBackdrop.classList.add('hidden'));
+smartBackdrop.addEventListener('click', (e) => {
+  if (e.target === smartBackdrop) smartBackdrop.classList.add('hidden');
+});
+smartBackdrop.querySelectorAll('.smart-tab').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    smartBackdrop.querySelectorAll('.smart-tab').forEach((b) => b.classList.toggle('on', b === btn));
+    smartBackdrop.querySelectorAll('.smart-pane').forEach((p) => {
+      p.classList.toggle('on', p.id === `smart-pane-${btn.dataset.tab}`);
+    });
+  });
+});
+
+// --- Вкладка «Артисты» ---
+let smartArtistsCache = null;
+function smartLibArtists() {
+  const tag = `${state.myTracks ? state.myTracks.length : 'x'}|${state.localTracks ? state.localTracks.length : 'x'}`;
+  if (smartArtistsCache && smartArtistsCache.tag === tag) return smartArtistsCache.map;
+  const map = new Map(); // нормализованное -> исходное имя
+  const push = (name) => {
+    const n = normalizeArtist(name);
+    if (!n || map.has(n)) return;
+    map.set(n, name);
+  };
+  (state.myTracks || []).forEach((t) => push(t.artist));
+  (state.localTracks || []).forEach((t) => push(t.artist));
+  smartArtistsCache = { tag, map };
+  return map;
+}
+
+function smartRenderArtists() {
+  const chips = $('smart-artists-chips');
+  chips.textContent = '';
+  for (const name of smart.artists) {
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    const label = document.createElement('span');
+    label.textContent = name;
+    const x = document.createElement('button');
+    x.textContent = '✕';
+    x.title = 'Убрать из любимых';
+    x.addEventListener('click', () => {
+      smart.artists = smart.artists.filter((a) => normalizeArtist(a) !== normalizeArtist(name));
+      smartSave();
+      smartArtistsCache = null;
+      smartRenderArtists();
+    });
+    chip.append(label, x);
+    chips.appendChild(chip);
+  }
+
+  const list = $('smart-artists-list');
+  list.textContent = '';
+  const q = ($('smart-artists-search').value || '').trim().toLowerCase();
+  const map = smartLibArtists();
+  $('smart-artists-count').textContent =
+    `Любимых артистов: ${smart.artists.length} · в библиотеке: ${map.size}`;
+  const names = [...map.values()].filter((n) => !q || n.toLowerCase().includes(q)).slice(0, 60);
+  for (const name of names) {
+    const row = document.createElement('div');
+    row.className = 'smart-row';
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    nm.textContent = name;
+    const isFav = smart.artists.some((a) => normalizeArtist(a) === normalizeArtist(name));
+    const act = document.createElement('button');
+    act.className = 'track-act' + (isFav ? ' like on' : '');
+    act.textContent = isFav ? '♥' : '+';
+    act.title = isFav ? 'Убрать из любимых' : 'Добавить в любимые';
+    act.addEventListener('click', () => {
+      if (isFav) {
+        smart.artists = smart.artists.filter((a) => normalizeArtist(a) !== normalizeArtist(name));
+      } else if (smart.artists.length >= 40) {
+        toast('Многовато: до 40 любимых артистов');
+        return;
+      } else {
+        smart.artists.push(name);
+      }
+      smartSave();
+      smartRenderArtists();
+    });
+    row.append(nm, act);
+    list.appendChild(row);
+  }
+  if (!names.length) {
+    const ph = document.createElement('div');
+    ph.className = 'smart-note';
+    ph.textContent = state.myTracks ? 'Ничего не нашлось по запросу' : 'Библиотека ещё не загружена — откройте «Мою музыку» или включите умный режим';
+    list.appendChild(ph);
+  }
+}
+$('smart-artists-search').addEventListener('input', smartRenderArtists);
+
+// --- Вкладка «Треки» ---
+function smartRenderTracksTab() {
+  const list = $('smart-tracks-list');
+  list.textContent = '';
+  const src = state.myTracks || state.localTracks || [];
+  const q = ($('smart-tracks-search').value || '').trim().toLowerCase();
+  const rows = [];
+  const seen = new Set();
+
+  if (q) {
+    for (const t of src) {
+      if (rows.length >= 60) break;
+      if (!`${t.artist} ${t.title}`.toLowerCase().includes(q)) continue;
+      const k = normalizeArtist(t.artist) + '\u0000' + String(t.title || '').toLowerCase().trim();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      rows.push(t);
+    }
+    $('smart-tracks-count').textContent = `Варианты по запросу: ${rows.length}`;
+  } else {
+    for (const t of src) {
+      if (smartFav(t) !== 1) continue;
+      const k = normalizeArtist(t.artist) + '\u0000' + String(t.title || '').toLowerCase().trim();
+      if (seen.has(k)) continue;
+      seen.add(k);
+      rows.push(t);
+    }
+    $('smart-tracks-count').textContent = `Любимых треков: ${rows.length}`;
+  }
+
+  for (const t of rows) {
+    const row = document.createElement('div');
+    row.className = 'smart-row';
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    const isFav = smartFav(t) === 1;
+    const title1 = document.createElement('div');
+    title1.textContent = t.title;
+    const title2 = document.createElement('small');
+    title2.textContent = t.artist;
+    nm.append(title1, title2);
+
+    const act = document.createElement('button');
+    act.className = 'track-act' + (isFav ? ' like on' : '');
+    act.textContent = q ? (isFav ? '✓' : '♥') : '✕';
+    act.title = q ? (isFav ? 'Уже в любимых — убрать?' : 'Добавить в любимые') : 'Убрать из любимых';
+    act.addEventListener('click', () => {
+      smartToggleFav(t, q ? !isFav : false);
+      smartRenderTracksTab();
+    });
+    row.append(nm, act);
+    list.appendChild(row);
+  }
+  if (!rows.length && q) {
+    const ph = document.createElement('div');
+    ph.className = 'smart-note';
+    ph.textContent = state.myTracks || state.localTracks ? 'Ничего не нашлось' : 'Библиотека ещё не загружена';
+    list.appendChild(ph);
+  }
+}
+$('smart-tracks-search').addEventListener('input', smartRenderTracksTab);
+
+// --- Вкладка «Непонравилось» ---
+function smartRenderDislikes() {
+  const list = $('smart-dislikes-list');
+  list.textContent = '';
+  const src = state.myTracks || state.localTracks || [];
+  const seen = new Set();
+  let n = 0;
+  for (const t of src) {
+    if (smartFav(t) !== -1) continue;
+    const k = nameKey(t);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    n++;
+    const row = document.createElement('div');
+    row.className = 'smart-row';
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    const t1 = document.createElement('div');
+    t1.textContent = t.title;
+    const t2 = document.createElement('small');
+    t2.textContent = t.artist;
+    nm.append(t1, t2);
+
+    const back = document.createElement('button');
+    back.className = 'track-act';
+    back.textContent = '↩';
+    back.title = 'Вернуть в умный режим';
+    back.addEventListener('click', () => {
+      smartToggleDislike(t, false);
+      smartRenderDislikes();
+    });
+    const ban = document.createElement('button');
+    ban.className = 'track-act danger';
+    ban.textContent = '🚫';
+    ban.title = 'Исключить исполнителя целиком';
+    ban.addEventListener('click', () => {
+      const nmArtist = String(t.artist || '').trim();
+      if (!nmArtist) return;
+      if (!smart.hiddenArtists.some((h) => normalizeArtist(h) === normalizeArtist(nmArtist))) {
+        smart.hiddenArtists.push(nmArtist);
+      }
+      smartSave();
+      smartRenderDislikes();
+      toast(`«${nmArtist}» исключён из умного режима`);
+    });
+    row.append(nm, back, ban);
+    list.appendChild(row);
+  }
+  if (!n) {
+    const ph = document.createElement('div');
+    ph.className = 'smart-note';
+    ph.textContent = 'Пока ничего не помечено «не нравится»';
+    list.appendChild(ph);
+  }
+
+  const chips = $('smart-hidden-chips');
+  chips.textContent = '';
+  for (const name of smart.hiddenArtists) {
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    const label = document.createElement('span');
+    label.textContent = name;
+    const x = document.createElement('button');
+    x.textContent = '✕';
+    x.title = 'Вернуть исполнителя';
+    x.addEventListener('click', () => {
+      smart.hiddenArtists = smart.hiddenArtists.filter((h) => normalizeArtist(h) !== normalizeArtist(name));
+      smartSave();
+      smartRenderDislikes();
+    });
+    chip.append(label, x);
+    chips.appendChild(chip);
+  }
+  if (!smart.hiddenArtists.length) {
+    const ph = document.createElement('div');
+    ph.className = 'smart-note';
+    ph.style.marginTop = '6px';
+    ph.textContent = 'Исключённых артистов нет';
+    chips.appendChild(ph);
+  }
+}
+
+// --- Вкладка «Подбор» (ручки) ---
+const SMART_COOL = ['Нет', '15 мин', '1 ч', 'День'];
+
+function smartRenderKnobs() {
+  $('s-explore').value = smart.knobs.explore;
+  $('s-explore-v').textContent = smart.knobs.explore + '%';
+  $('s-cap').value = smart.knobs.cap;
+  $('s-cap-v').textContent = String(smart.knobs.cap);
+  $('s-cooldown').value = smart.knobs.cooldown;
+  $('s-cooldown-v').textContent = SMART_COOL[smart.knobs.cooldown] || 'Нет';
+  $('s-tod').checked = !!smart.knobs.tod;
+  $('s-hide-disliked').checked = !!smart.knobs.hideDisliked;
+
+  let plays = 0, skips = 0;
+  for (const k in smartStats.tr) { plays += smartStats.tr[k].p; skips += smartStats.tr[k].s; }
+  $('smart-stats-info').textContent = `Прослушиваний: ${plays} · Скипов: ${skips}`;
+}
+
+$('s-explore').addEventListener('input', (e) => {
+  smart.knobs.explore = Number(e.target.value);
+  $('s-explore-v').textContent = smart.knobs.explore + '%';
+  smartSave();
+});
+$('s-cap').addEventListener('input', (e) => {
+  smart.knobs.cap = Number(e.target.value);
+  $('s-cap-v').textContent = String(smart.knobs.cap);
+  smartSave();
+});
+$('s-cooldown').addEventListener('input', (e) => {
+  smart.knobs.cooldown = Number(e.target.value);
+  $('s-cooldown-v').textContent = SMART_COOL[smart.knobs.cooldown] || 'Нет';
+  smartSave();
+});
+$('s-tod').addEventListener('change', (e) => {
+  smart.knobs.tod = e.target.checked;
+  smartSave();
+});
+$('s-hide-disliked').addEventListener('change', (e) => {
+  smart.knobs.hideDisliked = e.target.checked;
+  smartSave();
+  renderTracks(); // скрыть/показать дизлайки сразу
+});
+$('smart-stats-reset').addEventListener('click', () => {
+  smartStats = { tr: {}, ar: {} };
+  try { localStorage.removeItem(SMART_STATS_KEY); } catch (e) { /* ок */ }
+  smartRenderKnobs();
+  toast('Статистика умного режима сброшена');
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !smartBackdrop.classList.contains('hidden')) {
+    smartBackdrop.classList.add('hidden');
+  }
+});
+
+// Расширенный отладочный доступ из консоли
+window.__nk = { state, eq, audio, ensureEqGraph, smart, smartStats, smartBuildQueue, smartScore };

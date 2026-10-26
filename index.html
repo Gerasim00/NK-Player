@@ -551,12 +551,13 @@
     .modal-foot { display: flex; justify-content: flex-end; gap: 8px; }
 
     /* ---------- Настройки ---------- */
-    #settings-backdrop {
+    #settings-backdrop,
+    #smart-backdrop {
       position: fixed; inset: 0; z-index: 80;
       display: flex; align-items: center; justify-content: center;
       background: #050713cc;
     }
-    #settings-backdrop.hidden { display: none; }
+    #settings-backdrop.hidden, #smart-backdrop.hidden { display: none; }
     .settings {
       width: 560px; max-width: calc(100vw - 48px);
       max-height: 86vh; display: flex; flex-direction: column;
@@ -592,6 +593,48 @@
     .s-toggle:checked::after { transform: translateX(18px); }
     .settings-foot { display: flex; justify-content: flex-end; margin-top: 12px; }
     .btn-ghost.danger:hover { background: #ff5c7a22; color: var(--danger); }
+
+    /* ---------- Умный режим (NK-Wave) ---------- */
+    .smart-tabs { display: flex; gap: 6px; margin: 10px 0 2px; }
+    .smart-tab {
+      flex: 1; padding: 8px 6px; border-radius: 9px; border: 1px solid #1a2342;
+      background: #0d1330; color: var(--muted); font-size: 12.5px; cursor: pointer;
+    }
+    .smart-tab:hover { color: var(--text); }
+    .smart-tab.on { background: #1c2a5c; border-color: #3855b4; color: #dbe7ff; }
+    .smart-pane { display: none; }
+    .smart-pane.on { display: block; }
+    .smart-search {
+      width: 100%; margin-top: 10px; padding: 8px 12px; box-sizing: border-box;
+      background: #0b1029; border: 1px solid var(--border); border-radius: 9px;
+      color: var(--text); font-size: 13px; outline: none;
+    }
+    .smart-search:focus { border-color: #3f7dff; }
+    .smart-list { margin-top: 8px; min-height: 120px; max-height: 300px; overflow-y: auto; }
+    .smart-row {
+      display: flex; align-items: center; gap: 10px; padding: 7px 4px;
+      border-bottom: 1px solid #141b33; font-size: 13px;
+    }
+    .smart-row:last-child { border-bottom: none; }
+    .smart-row .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .smart-row .nm small { color: var(--muted); }
+    .smart-row .track-act { opacity: 1; }
+    .chip-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 5px 6px 5px 12px; border-radius: 999px;
+      background: #182448; border: 1px solid #2a3d78; font-size: 12.5px; color: #dfe8ff;
+    }
+    .chip button {
+      width: 18px; height: 18px; border-radius: 50%; background: #24356b; color: #9fb4e8;
+      font-size: 10px; line-height: 1; display: flex; align-items: center; justify-content: center; padding: 0;
+    }
+    .chip button:hover { background: #ff5c7a33; color: var(--danger); }
+    .smart-counter { margin: 10px 2px 0; color: var(--muted); font-size: 12px; }
+    .smart-note { margin-top: 8px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .track-act.like.on { opacity: 1; color: #ff8fb0; }
+    .track-act.dislike.on { opacity: 1; color: #ff5c7a; }
+    .track.disliked .track-title, .track.disliked .track-artist { opacity: .5; }
 
     /* ---------- Главная страница (NK-Wave) ---------- */
     #home-view {
@@ -834,6 +877,85 @@
 
       <div class="settings-foot">
         <button id="settings-done" class="btn">Готово</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Умный режим: настройки (кнопка под NK-Wave) -->
+  <div id="smart-backdrop" class="hidden">
+    <div class="settings" role="dialog" aria-modal="true">
+      <div class="settings-head">
+        <h3>Умный режим NK-Wave</h3>
+        <button id="smart-close" class="tb-btn" title="Закрыть" aria-label="Закрыть">
+          <svg width="10" height="10" viewBox="0 0 10 10"><path d="M0.5 0.5l9 9M9.5 0.5l-9 9" stroke="currentColor" stroke-width="1.2"/></svg>
+        </button>
+      </div>
+
+      <div class="smart-tabs">
+        <button class="smart-tab on" data-tab="artists">Артисты</button>
+        <button class="smart-tab" data-tab="tracks">Треки</button>
+        <button class="smart-tab" data-tab="dislikes">Непонравилось</button>
+        <button class="smart-tab" data-tab="knobs">Подбор</button>
+      </div>
+
+      <div class="settings-scroll">
+        <div class="smart-pane on" id="smart-pane-artists">
+          <div class="smart-note">Любимые артисты — зерно умного режима. Для начала хватит трёх-пяти; отмечать можно и кнопкой ♥ в списках.</div>
+          <input id="smart-artists-search" class="smart-search" type="text" placeholder="Поиск по своей библиотеке…">
+          <div class="chip-list" id="smart-artists-chips"></div>
+          <div class="smart-counter" id="smart-artists-count"></div>
+          <div class="smart-list" id="smart-artists-list"></div>
+        </div>
+
+        <div class="smart-pane" id="smart-pane-tracks">
+          <div class="smart-note">Любимые треки получают высший приоритет в умном режиме. Добавляйте поиском здесь или кнопкой ♥ у трека.</div>
+          <input id="smart-tracks-search" class="smart-search" type="text" placeholder="Поиск по названию или исполнителю…">
+          <div class="smart-counter" id="smart-tracks-count"></div>
+          <div class="smart-list" id="smart-tracks-list"></div>
+        </div>
+
+        <div class="smart-pane" id="smart-pane-dislikes">
+          <div class="smart-note">Дизлайкнутые треки никогда не играют в умном режиме. «Вернуть» — трек снова в ротации с нейтральным приоритетом.</div>
+          <div class="sec">Исключённые треки</div>
+          <div class="smart-list" id="smart-dislikes-list"></div>
+          <div class="sec">Исключённые артисты</div>
+          <div class="chip-list" id="smart-hidden-chips"></div>
+          <div class="smart-note">Исключение артиста касается только умного режима — в списках библиотеки его треки остаются.</div>
+        </div>
+
+        <div class="smart-pane" id="smart-pane-knobs">
+          <div class="s-row">
+            <div class="s-label"><b>Новое ↔ Знакомое</b><small>Доля неигранных треков в очереди умного режима</small></div>
+            <input id="s-explore" class="s-range" type="range" min="0" max="40" step="5">
+            <span class="s-val" id="s-explore-v">20%</span>
+          </div>
+          <div class="s-row">
+            <div class="s-label"><b>Один артист подряд</b><small>Сколько треков одного исполнителя может идти друг за другом</small></div>
+            <input id="s-cap" class="s-range" type="range" min="1" max="4" step="1">
+            <span class="s-val" id="s-cap-v">2</span>
+          </div>
+          <div class="s-row">
+            <div class="s-label"><b>Не надоедать</b><small>Перерыв перед повторным треком исполнителя</small></div>
+            <input id="s-cooldown" class="s-range" type="range" min="0" max="3" step="1">
+            <span class="s-val" id="s-cooldown-v">15 мин</span>
+          </div>
+          <div class="s-row">
+            <div class="s-label"><b>Реагировать на время суток</b><small>Артисты, которых вы обычно слушаете в это время, — чуть выше</small></div>
+            <input id="s-tod" class="s-toggle" type="checkbox">
+          </div>
+          <div class="s-row">
+            <div class="s-label"><b>Скрывать дизлайки в списках</b><small>Иначе они остаются в списках приглушёнными</small></div>
+            <input id="s-hide-disliked" class="s-toggle" type="checkbox">
+          </div>
+          <div class="s-row">
+            <div class="s-label"><b>Статистика прослушиваний</b><small id="smart-stats-info">—</small></div>
+            <button id="smart-stats-reset" class="btn-ghost danger">Сбросить</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-foot">
+        <button id="smart-done" class="btn">Готово</button>
       </div>
     </div>
   </div>

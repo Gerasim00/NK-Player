@@ -610,7 +610,9 @@
       user-select: none;
     }
     .home-cat { position: relative; width: min(46vh, 420px); flex: none; }
-    .holo-tilt { position: absolute; inset: 0; will-change: transform; }
+    /* holo-tilt ОБЯЗАТЕЛЬНО relative: высоту сцене задаёт SVG в потоке;
+       absolute-обёртка обнуляла высоту .home-cat, и канвас сплющивался в 377×0 */
+    .holo-tilt { position: relative; }
     #home-cat-svg {
       width: 100%; height: auto; display: block;
       animation: holoBreath 5.2s ease-in-out infinite;
@@ -1119,8 +1121,6 @@
             Настройки
           </button>
 
-          <!-- ВРЕМЕННО: диагностика голограммы (уберём после отладки) -->
-          <div id="holo-diag" style="margin-top:10px;font-size:11px;color:#5d86c0;opacity:.9;letter-spacing:.2px;text-align:center">holo: ждём init…</div>
         </div>
       </section>
 

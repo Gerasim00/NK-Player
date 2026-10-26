@@ -902,11 +902,9 @@ for (let i = 0; i < 20; i++) {
     console.log('[holo] маска загружена, сэмпл:', HOLO.maskParts);
     // если инициализация уже прошла (файл догрузился позже) — применяем маску сейчас
     if (HOLO.inited) applyHoloMaskChoice();
-    updateHoloDiag();
   };
   im.onerror = () => {
     console.warn('[holo] маска не загрузилась — остаёмся на векторном коте');
-    updateHoloDiag();
   };
   im.src = 'assets/cat-sil.png';
 })();
@@ -948,20 +946,6 @@ function applyHoloMaskChoice() {
       ' parts=' + HOLO.maskParts + ' rasterOK=' + HOLO.rasterOK);
   }
   return useMask;
-}
-
-// ВРЕМЕННО: экранная диагностика голограммы (уберём после отладки)
-function updateHoloDiag() {
-  const el = document.getElementById('holo-diag');
-  if (!el) return;
-  const c = HOLO.canvas;
-  el.textContent = 'holo: parts=' + HOLO.parts.length +
-    ' · mask=' + (HOLO.mask ? 'да' : 'нет') + '(' + HOLO.maskParts + ')' +
-    ' · raster=' + (HOLO.rasterOK ? 'ок' : 'СЛОМАН') +
-    ' · buf=' + (c ? c.width + '×' + c.height : '—') +
-    ' · cssW=' + (c ? c.clientWidth : '—') +
-    ' · k=' + (HOLO.k || 0).toFixed(2) +
-    ' · run=' + (HOLO.running ? 'да' : 'нет');
 }
 
 // Морда поверх частиц (только в режиме фото-маски): светящиеся глаза-щёлки
@@ -1071,7 +1055,6 @@ function holoResize() {
   el.height = Math.round(w * (520 / 420) * dpr);
   HOLO.k = el.width / 420;
   HOLO.ctx.setTransform(HOLO.k, 0, 0, HOLO.k, 0, 0);
-  updateHoloDiag();
 }
 
 function initHolo() {
@@ -1088,7 +1071,6 @@ function initHolo() {
   if (HOLO.inited) {
     new ResizeObserver(() => { if (HOLO.inited) holoResize(); }).observe(HOLO.canvas);
   }
-  updateHoloDiag();
   return HOLO.inited;
 }
 
@@ -1149,7 +1131,6 @@ function startHoloCat() {
   HOLO.running = true;
   if (!HOLO.t0) HOLO.t0 = performance.now();
   HOLO.raf = requestAnimationFrame(holoFrame);
-  updateHoloDiag();
 }
 
 function stopHoloCat() {
@@ -1159,7 +1140,6 @@ function stopHoloCat() {
   HOLO.glitch = null;
   if (HOLO.ctx) HOLO.ctx.clearRect(0, 0, 420, 520);
   HOLO.tilt.tx = 0; HOLO.tilt.ty = 0;
-  updateHoloDiag();
 }
 
 // Параллакс: слушаем сцену целиком, амплитуды малые — эффект вглубь

@@ -280,7 +280,7 @@
     .icon-btn:hover { background: var(--hover); color: var(--text); }
 
     /* ---------- Контент ---------- */
-    .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+    .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
     .main-header {
       display: flex; align-items: center; gap: 18px;
       padding: 20px 28px 14px;
@@ -593,6 +593,64 @@
     .settings-foot { display: flex; justify-content: flex-end; margin-top: 12px; }
     .btn-ghost.danger:hover { background: #ff5c7a22; color: var(--danger); }
 
+    /* ---------- Главная страница (NK-Wave) ---------- */
+    #home-view {
+      position: absolute; inset: 0; z-index: 2;
+      display: flex; align-items: center; justify-content: center;
+      overflow: hidden;
+      background:
+        radial-gradient(760px 320px at 88% 92%, #7b5cff14 0%, transparent 60%),
+        radial-gradient(1000px 680px at 50% 44%, #0b1a3d 0%, transparent 62%),
+        radial-gradient(1300px 820px at 50% 112%, #0d2450 0%, transparent 58%),
+        linear-gradient(180deg, #04060f 0%, #050a18 100%);
+    }
+    .home-stage {
+      display: flex; flex-direction: column; align-items: center;
+      transform: translateY(-2%);
+      user-select: none;
+    }
+    .home-cat { position: relative; width: min(46vh, 420px); flex: none; }
+    .home-cat svg { width: 100%; height: auto; display: block; }
+    .cat-aura { animation: homeAura 4.5s ease-in-out infinite alternate; }
+    @keyframes homeAura { from { opacity: .55; } to { opacity: .95; } }
+    .home-ray { animation: homeRay 6s ease-in-out infinite alternate; }
+    @keyframes homeRay { from { opacity: .12; } to { opacity: .4; } }
+    .home-dot { animation: homeDot 3.4s ease-in-out infinite alternate; }
+    @keyframes homeDot { from { opacity: .18; } to { opacity: .75; } }
+
+    .home-play {
+      position: relative; z-index: 3;
+      width: 148px; height: 148px; border-radius: 50%;
+      margin-top: -96px;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px;
+      color: #dcebff; cursor: pointer;
+      background: radial-gradient(circle at 50% 36%, #14294f66 0%, #060b1ccc 72%);
+      border: 2px solid #3f7dff;
+      box-shadow: 0 0 0 7px #2f7bff1a, 0 0 36px #2f7bff59, inset 0 0 26px #2f7bff33;
+      animation: homePulse 2.8s ease-in-out infinite;
+      transition: transform .15s ease;
+    }
+    .home-play:hover { transform: scale(1.04); border-color: #6da4ff; }
+    .home-play:active { transform: scale(.98); }
+    @keyframes homePulse {
+      0%, 100% { box-shadow: 0 0 0 7px #2f7bff1a, 0 0 30px #2f7bff4d, inset 0 0 24px #2f7bff30; }
+      50% { box-shadow: 0 0 0 10px #2f7bff2e, 0 0 52px #2f7bff7a, inset 0 0 30px #2f7bff44; }
+    }
+    .home-play-icon { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; }
+    .home-play-label { font-size: 15px; font-weight: 600; letter-spacing: .02em; color: #cfd8ff; }
+    .home-settings {
+      position: relative; z-index: 3;
+      margin-top: 20px; height: 36px; padding: 0 18px;
+      border-radius: 999px; cursor: pointer;
+      display: inline-flex; align-items: center; gap: 8px;
+      background: linear-gradient(180deg, #101d3f, #0a1226);
+      border: 1px solid #2b3f77; color: #dbe6ff; font-size: 12.5px;
+      box-shadow: 0 0 18px #2f7bff2e;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .home-settings:hover { border-color: #3f7dff; box-shadow: 0 0 26px #2f7bff59; }
+    .home-settings svg { flex: none; opacity: .9; }
+
     /* ---------- Плашка обновления ---------- */
     /* Плашка висит внизу справа: сверху она перекрывала «Фильтр» и «Перемешать» */
     #update-banner {
@@ -794,6 +852,10 @@
         </div>
       </div>
       <nav class="nav" aria-label="Разделы">
+        <button class="nav-item" id="nav-home" data-view="home">
+          <span class="nav-icon" aria-hidden="true">⌂</span>
+          <span class="nav-text"><span class="nav-label">Главная</span><span class="nav-sub">NK-Wave</span></span>
+        </button>
         <button class="nav-item active" id="nav-my" data-view="my">
           <span class="nav-icon" aria-hidden="true">♫</span>
           <span class="nav-text"><span class="nav-label">Моя музыка</span><span class="nav-sub" id="nav-my-count"></span></span>
@@ -852,6 +914,144 @@
           <button id="btn-play-view" class="btn-round" title="Слушать" aria-label="Слушать список">▶</button>
         </div>
       </header>
+
+      <!-- Главная: NK-Wave -->
+      <section id="home-view" class="hidden" aria-label="Главная страница">
+        <div class="home-stage">
+          <div class="home-cat">
+            <svg viewBox="0 0 420 520" role="img" aria-hidden="true">
+              <defs>
+                <radialGradient id="hg-aura" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stop-color="#2f7bff" stop-opacity=".55"/>
+                  <stop offset="70%" stop-color="#2f7bff" stop-opacity=".12"/>
+                  <stop offset="100%" stop-color="#2f7bff" stop-opacity="0"/>
+                </radialGradient>
+                <linearGradient id="hg-body" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#8fd2ff" stop-opacity=".5"/>
+                  <stop offset="55%" stop-color="#3f8dff" stop-opacity=".3"/>
+                  <stop offset="100%" stop-color="#1e5fd8" stop-opacity=".14"/>
+                </linearGradient>
+                <linearGradient id="hg-ray" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#4fd0ff" stop-opacity="0"/>
+                  <stop offset="50%" stop-color="#4fd0ff" stop-opacity=".45"/>
+                  <stop offset="100%" stop-color="#4fd0ff" stop-opacity="0"/>
+                </linearGradient>
+                <filter id="hf-aura" x="-60%" y="-60%" width="220%" height="220%">
+                  <feGaussianBlur stdDeviation="16"/>
+                </filter>
+                <filter id="hf-soft" x="-40%" y="-40%" width="180%" height="180%">
+                  <feGaussianBlur stdDeviation="4"/>
+                </filter>
+              </defs>
+
+              <!-- Пол-подиум -->
+              <ellipse cx="210" cy="468" rx="196" ry="40" fill="url(#hg-aura)" opacity=".5"/>
+              <ellipse cx="210" cy="468" rx="150" ry="30" fill="none" stroke="#4fd0ff" stroke-opacity=".4" stroke-dasharray="3 7"/>
+              <ellipse cx="210" cy="468" rx="228" ry="52" fill="none" stroke="#4fd0ff" stroke-opacity=".18"/>
+              <path d="M52 452 Q210 398 368 452" fill="none" stroke="#4fd0ff" stroke-opacity=".25" stroke-dasharray="2 8"/>
+
+              <!-- Световые линии -->
+              <g>
+                <line class="home-ray" x1="120" y1="70" x2="120" y2="440" stroke="url(#hg-ray)" stroke-width="2.5" style="animation-delay:-1.2s"/>
+                <line class="home-ray" x1="94" y1="130" x2="94" y2="428" stroke="url(#hg-ray)" stroke-width="1.5" style="animation-delay:-3s"/>
+                <line class="home-ray" x1="300" y1="60" x2="300" y2="436" stroke="url(#hg-ray)" stroke-width="2.5" style="animation-delay:-2.1s"/>
+                <line class="home-ray" x1="328" y1="150" x2="328" y2="420" stroke="url(#hg-ray)" stroke-width="1.5" style="animation-delay:-4.2s"/>
+                <line class="home-ray" x1="210" y1="14" x2="210" y2="66" stroke="url(#hg-ray)" stroke-width="2" style="animation-delay:-.4s"/>
+              </g>
+
+              <!-- Голографические кольца -->
+              <g stroke="#4fd0ff" fill="none" opacity=".9">
+                <ellipse cx="210" cy="306" rx="128" ry="30" stroke-opacity=".28" stroke-dasharray="5 9">
+                  <animateTransform attributeName="transform" type="rotate" values="-5 210 306;5 210 306;-5 210 306" dur="14s" repeatCount="indefinite"/>
+                </ellipse>
+                <ellipse cx="210" cy="352" rx="162" ry="38" stroke-opacity=".36" stroke-dasharray="2 6">
+                  <animateTransform attributeName="transform" type="rotate" values="4 210 352;-4 210 352;4 210 352" dur="17s" repeatCount="indefinite"/>
+                </ellipse>
+                <ellipse cx="210" cy="404" rx="192" ry="46" stroke-opacity=".22" stroke-dasharray="8 10">
+                  <animateTransform attributeName="transform" type="rotate" values="-3 210 404;3 210 404;-3 210 404" dur="21s" repeatCount="indefinite"/>
+                </ellipse>
+                <ellipse cx="210" cy="452" rx="212" ry="34" stroke-opacity=".5" stroke-dasharray="1 5"/>
+                <ellipse cx="210" cy="452" rx="236" ry="44" stroke-opacity=".2"/>
+              </g>
+
+              <!-- Свечение за котом -->
+              <ellipse cx="210" cy="252" rx="122" ry="158" fill="url(#hg-aura)" filter="url(#hf-aura)" opacity=".7"/>
+
+              <!-- Кот: аура -->
+              <g class="cat-aura" filter="url(#hf-aura)" stroke="#2f7bff" fill="#2f7bff" opacity=".75">
+                <path d="M210 168 C167 168 142 138 142 104 C142 72 168 46 210 46 C252 46 278 72 278 104 C278 138 253 168 210 168 Z
+                  M158 64 L136 16 L196 44 Z M262 64 L284 16 L224 44 Z
+                  M210 176 C148 192 110 254 102 334 C96 396 116 448 158 464 L262 464 C304 448 324 396 318 334 C310 254 272 192 210 176 Z
+                  M156 388 C156 380 162 374 170 374 L184 374 C192 374 198 380 198 388 L198 448 C198 456 192 462 184 462 L170 462 C162 462 156 456 156 448 Z
+                  M222 388 C222 380 228 374 236 374 L250 374 C258 374 264 380 264 388 L264 448 C264 456 258 462 250 462 L236 462 C228 462 222 456 222 448 Z
+                  M312 386 C334 428 316 472 254 482 C198 490 136 482 112 460 C102 450 108 440 120 444 C152 458 212 460 252 454 C298 446 306 414 296 392 C292 380 306 374 312 386 Z"
+                  stroke-width="6"/>
+              </g>
+
+              <!-- Кот: чёткий контур -->
+              <path d="M210 168 C167 168 142 138 142 104 C142 72 168 46 210 46 C252 46 278 72 278 104 C278 138 253 168 210 168 Z
+                M158 64 L136 16 L196 44 Z M262 64 L284 16 L224 44 Z
+                M210 176 C148 192 110 254 102 334 C96 396 116 448 158 464 L262 464 C304 448 324 396 318 334 C310 254 272 192 210 176 Z
+                M156 388 C156 380 162 374 170 374 L184 374 C192 374 198 380 198 388 L198 448 C198 456 192 462 184 462 L170 462 C162 462 156 456 156 448 Z
+                M222 388 C222 380 228 374 236 374 L250 374 C258 374 264 380 264 388 L264 448 C264 456 258 462 250 462 L236 462 C228 462 222 456 222 448 Z
+                M312 386 C334 428 316 472 254 482 C198 490 136 482 112 460 C102 450 108 440 120 444 C152 458 212 460 252 454 C298 446 306 414 296 392 C292 380 306 374 312 386 Z"
+                fill="url(#hg-body)" stroke="#7fd2ff" stroke-opacity=".85" stroke-width="2.4" stroke-linejoin="round"/>
+
+              <!-- Морда -->
+              <g>
+                <path d="M178 102 q10 -10 22 0 q-10 9 -22 0 Z" fill="#d7f0ff" filter="url(#hf-soft)" opacity=".95"/>
+                <path d="M220 102 q10 -10 22 0 q-10 9 -22 0 Z" fill="#d7f0ff" filter="url(#hf-soft)" opacity=".95"/>
+                <path d="M204 122 L216 122 L210 130 Z" fill="#9fd4ff" opacity=".8"/>
+                <path d="M210 130 q-6 8 -14 6 M210 130 q6 8 14 6" fill="none" stroke="#9fd4ff" stroke-opacity=".55" stroke-width="1.4"/>
+                <g stroke="#9fd4ff" stroke-opacity=".3" stroke-width="1.2">
+                  <line x1="168" y1="114" x2="136" y2="106"/>
+                  <line x1="168" y1="120" x2="134" y2="118"/>
+                  <line x1="168" y1="126" x2="138" y2="130"/>
+                  <line x1="252" y1="114" x2="284" y2="106"/>
+                  <line x1="252" y1="120" x2="286" y2="118"/>
+                  <line x1="252" y1="126" x2="282" y2="130"/>
+                </g>
+              </g>
+
+              <!-- Частицы-пиксели -->
+              <g fill="#bfe4ff">
+                <circle class="home-dot" cx="186" cy="222" r="2.4" style="animation-delay:-0.2s"/>
+                <circle class="home-dot" cx="246" cy="252" r="1.8" style="animation-delay:-1.1s"/>
+                <circle class="home-dot" cx="158" cy="302" r="2" style="animation-delay:-2s"/>
+                <circle class="home-dot" cx="264" cy="316" r="2.6" style="animation-delay:-0.7s"/>
+                <circle class="home-dot" cx="212" cy="268" r="1.6" style="animation-delay:-2.9s"/>
+                <circle class="home-dot" cx="146" cy="366" r="2.2" style="animation-delay:-1.6s"/>
+                <circle class="home-dot" cx="282" cy="252" r="1.7" style="animation-delay:-3.3s"/>
+                <circle class="home-dot" cx="198" cy="428" r="2" style="animation-delay:-0.9s"/>
+                <circle class="home-dot" cx="252" cy="412" r="1.5" style="animation-delay:-2.4s"/>
+                <circle class="home-dot" cx="120" cy="428" r="1.6" style="animation-delay:-1.8s"/>
+                <circle class="home-dot" cx="308" cy="368" r="2" style="animation-delay:-3.7s"/>
+                <circle class="home-dot" cx="192" cy="152" r="1.5" style="animation-delay:-2.7s"/>
+                <circle class="home-dot" cx="232" cy="92" r="1.7" style="animation-delay:-1.4s"/>
+                <circle class="home-dot" cx="106" cy="470" r="1.4" style="animation-delay:-0.6s"/>
+                <circle class="home-dot" cx="330" cy="446" r="1.6" style="animation-delay:-3.1s"/>
+              </g>
+            </svg>
+          </div>
+
+          <button id="home-play" class="home-play" title="Слушать" aria-label="Включить музыку">
+            <span class="home-play-icon">
+              <svg id="home-play-ico-play" width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l12-7z"/></svg>
+              <svg id="home-play-ico-pause" class="hidden" width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>
+            </span>
+            <span class="home-play-label">NK-Wave</span>
+          </button>
+
+          <button id="home-settings" class="home-settings">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3.2"/>
+              <path d="M12 2.6v3.2M12 18.2v3.2M2.6 12h3.2M18.2 12h3.2M5.7 5.7l2.3 2.3M16 16l2.3 2.3M18.3 5.7L16 8M8 16l-2.3 2.3"/>
+            </svg>
+            Настройки
+          </button>
+        </div>
+      </section>
+
       <div class="list-head" aria-hidden="true">
         <span style="text-align:right">#</span><span></span><span>Название</span><span style="text-align:right">⏱</span>
       </div>

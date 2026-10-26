@@ -417,7 +417,7 @@ function showApp() {
   loadAccount();
   updateLocalCount();
   loadLocalTracks().catch(() => {});
-  openView({ type: 'my' });
+  openView({ type: 'home' });
   loadPlaylists();
 }
 
@@ -679,7 +679,8 @@ function setActiveNav() {
   document.querySelectorAll('.nav-item').forEach((el) => el.classList.remove('active'));
   const v = state.view;
   let el = null;
-  if (v.type === 'my') el = $('nav-my');
+  if (v.type === 'home') el = $('nav-home');
+  else if (v.type === 'my') el = $('nav-my');
   else if (v.type === 'local') el = $('nav-local');
   else if (v.type === 'search') el = $('nav-search');
   else if (v.type === 'artist') el = $('nav-search');
@@ -717,16 +718,25 @@ async function openView(view) {
   state.view = view;
   filterInput.value = '';
   setActiveNav();
+  // «Главная» перекрывает весь контент: прячем хедер и список, показываем сцену
+  const homeMode = view.type === 'home';
+  $('home-view').classList.toggle('hidden', !homeMode);
+  document.querySelector('.main-header').classList.toggle('hidden', homeMode);
+  document.querySelector('.list-head').classList.toggle('hidden', homeMode);
+  tracksContainer.classList.toggle('hidden', homeMode);
   $('btn-import').classList.toggle('hidden', view.type !== 'local');
   // Свой плейлист можно очистить только из его же экрана — кнопка видна там
   $('btn-del-playlist').classList.toggle('hidden', view.type !== 'local-playlist');
-  // В очереди перемешивать нечего: порядок уже задан
-  $('btn-shuffle-play').classList.toggle('hidden', view.type === 'queue');
+  // В очереди перемешивать нечего: порядок уже задан; на главной кнопки хедера не нужны
+  $('btn-shuffle-play').classList.toggle('hidden', view.type === 'queue' || homeMode);
   const token = Symbol('view');
   state.viewToken = token;
   state.prefetchActive = false;
 
   try {
+    if (view.type === 'home') {
+      return; // ничего загружать не нужно: сцена статична
+    }
     if (view.type === 'my') {
       setHeader({ kind: 'Библиотека', title: 'Моя музыка', sub: '', icon: '♫' });
       showPlaceholder('Загрузка ваших треков…');
@@ -854,6 +864,32 @@ $('nav-search').addEventListener('click', () => {
   else if (state.view.type === 'artist') openView(state.view);
 });
 $('nav-queue').addEventListener('click', () => openView({ type: 'queue' }));
+$('nav-home').addEventListener('click', () => openView({ type: 'home' }));
+
+// ---------------------------------------------------------------- Главная (NK-Wave)
+
+// Большая кнопка на главной: продолжить current, если он есть, иначе начать
+// очередь из текущего списка. Иконка/состояние тянется от событий audio.
+function updateHomePlay() {
+  const playing = !!state.current && !audio.paused && !audio.ended;
+  $('home-play').classList.toggle('playing', playing);
+  $('home-play-ico-play').classList.toggle('hidden', playing);
+  $('home-play-ico-pause').classList.toggle('hidden', !playing);
+}
+
+$('home-play').addEventListener('click', async () => {
+  // Холодный старт: очередь ещё не собрана — подтягиваем «Мою музыку» и играем
+  if (!state.current && !state.displayed.length) {
+    await openView({ type: 'my' });
+    if (!state.displayed.length) return;
+  }
+  togglePlay();
+});
+$('home-settings').addEventListener('click', openSettings);
+audio.addEventListener('play', updateHomePlay);
+audio.addEventListener('pause', updateHomePlay);
+audio.addEventListener('ended', updateHomePlay);
+updateHomePlay();
 
 // ---------------------------------------------------------------- Контекстное меню
 

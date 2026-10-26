@@ -973,11 +973,11 @@ function drawHoloFace(ctx, t) {
   const nn = 0.8 + 0.2 * Math.sin(t * 1.1);
   const nx = 216, ny = 141;
   const g2 = ctx.createRadialGradient(nx, ny, 0, nx, ny, 12);
-  g2.addColorStop(0, `rgba(210,240,255,${0.50 * nn})`);
+  g2.addColorStop(0, `rgba(210,240,255,${0.62 * nn})`);
   g2.addColorStop(1, 'rgba(210,240,255,0)');
   ctx.fillStyle = g2;
   ctx.beginPath(); ctx.ellipse(nx, ny, 12, 9, 0, 0, 6.2832); ctx.fill();
-  ctx.fillStyle = 'rgba(228,248,255,.85)';
+  ctx.fillStyle = 'rgba(228,248,255,.9)';
   ctx.beginPath();
   ctx.moveTo(nx - 3.2, ny - 1.6);
   ctx.lineTo(nx + 3.2, ny - 1.6);
@@ -991,22 +991,25 @@ function holoSample() {
   // иначе — векторный силуэт #home-cat-body как fallback.
   // Без ctx.filter (на части GPU-связок он отрисовывается пустотой): мягкий край
   // делаем полупрозрачной подложкой чуть большего размера — «подшёрсток».
+  // Поле сэмплирования 840×1040 (2× канваса): сетка ×1 не пропускает тонкие
+  // пряди и складки; координаты сжимаются ÷2 в единицы viewBox 420×520
   const off = document.createElement('canvas');
-  off.width = 420; off.height = 520;
+  off.width = 840; off.height = 1040;
   const octx = off.getContext('2d', { willReadFrequently: true });
   let aAt, lumAt;
   if (HOLO.mask) {
-    octx.drawImage(HOLO.mask, 0, 0, 420, 520);
+    octx.drawImage(HOLO.mask, 0, 0, 840, 1040);
     octx.globalAlpha = 0.42;
-    octx.drawImage(HOLO.mask, -7, -7, 434, 534);
+    octx.drawImage(HOLO.mask, -14, -14, 868, 1068);
     octx.globalAlpha = 1;
-    const img = octx.getImageData(0, 0, 420, 520).data;
-    aAt = (x, y) => img[(y * 420 + x) * 4 + 3];
-    lumAt = (x, y) => img[(y * 420 + x) * 4]; // R = запечённая яркость генерата
+    const img = octx.getImageData(0, 0, 840, 1040).data;
+    aAt = (x, y) => img[(y * 840 + x) * 4 + 3];
+    lumAt = (x, y) => img[(y * 840 + x) * 4]; // R = запечённая яркость генерата
   } else {
     const pathEl = $('home-cat-body');
     if (!pathEl) return [];
     const path = new Path2D(pathEl.getAttribute('d'));
+    octx.setTransform(2, 0, 0, 2, 0, 0);
     octx.fillStyle = '#fff';
     octx.fill(path);
     octx.globalAlpha = 0.42;
@@ -1015,25 +1018,28 @@ function holoSample() {
     octx.lineJoin = 'round';
     octx.stroke(path); // расширенная мягкая кайма
     octx.globalAlpha = 1;
-    const img = octx.getImageData(0, 0, 420, 520).data;
-    aAt = (x, y) => img[(y * 420 + x) * 4 + 3];
+    octx.setTransform(1, 0, 0, 1, 0, 0);
+    const img = octx.getImageData(0, 0, 840, 1040).data;
+    aAt = (x, y) => img[(y * 840 + x) * 4 + 3];
     lumAt = null; // векторный fallback: без канала яркости
   }
 
   const all = [];
-  for (let y = 2; y < 518; y += 2) {
-    for (let x = 2; x < 418; x += 2) {
+  for (let y = 3; y < 1037; y += 1) {
+    for (let x = 3; x < 837; x += 1) {
       const a = aAt(x, y);
       if (a < 18) continue;
       const l = lumAt ? lumAt(x, y) : 115;
-      const xa = Math.max(2, x - 3), xb = Math.min(417, x + 3);
-      const ya = Math.max(2, y - 3), yb = Math.min(517, y + 3);
-      // Два градиента: альфа — внешний край силуэта; яркость — внутренние
-      // границы анатомии (пряди шерсти, провалы между лапами, изгиб бёдер)
+      // Два градиента по ±6px (маyed source-scale ±3 юнита): альфа — внешний
+      // край силуэта; яркость — внутренние границы анатомии (пряди, провалы
+      // между лапами, изгиб бёдер). По знаку и оси градиента — направление
+      // локальной пряди: частицы контура рисуем штрихами вдоль неё
+      const xa = Math.max(3, x - 6), xb = Math.min(836, x + 6);
+      const ya = Math.max(3, y - 6), yb = Math.min(1036, y + 6);
       const gradA = Math.abs(aAt(xb, y) - aAt(xa, y)) + Math.abs(aAt(x, yb) - aAt(x, ya));
-      const gradL = Math.abs(lumAt(xb, y) - lumAt(xa, y)) +
-        Math.abs(lumAt(x, yb) - lumAt(x, ya));
-      let e = Math.max(Math.min(1, gradA / 340), Math.min(1, gradL / 260));
+      const glx = lumAt ? lumAt(xb, y) - lumAt(xa, y) : 0;
+      const gly = lumAt ? lumAt(x, yb) - lumAt(x, ya) : 0;
+      let e = Math.max(Math.min(1, gradA / 340), Math.min(1, (Math.abs(glx) + Math.abs(gly)) / 260));
       if (a < 145) { // мягкая «пушистая» кайма силуэта — реже
         if (e < 0.5 && Math.random() > 0.32) continue;
         e = Math.max(e, 0.72);
@@ -1045,6 +1051,10 @@ function holoSample() {
         if (Math.random() > keep) continue;
       }
       const ly = l >= 215 ? 2 : (e >= 0.5 ? 1 : 0);
+      // Ориентация: градиент яркости перпендикулярен пряди (градиент по X —
+      // прядь вертикальная = dash 2; по Y — горизонтальная = dash 1)
+      const dash = (Math.abs(glx) === 0 && Math.abs(gly) === 0) ? 0 :
+        (Math.abs(glx) > Math.abs(gly) ? 2 : 1);
       const rg = ly === 2 ? 2 + Math.random() * 7 :
         ly === 1 ? 5 + Math.random() * 15 : 8 + Math.random() * 30;
       const v = ly === 2 ? 0.05 + Math.random() * 0.13 :
@@ -1052,7 +1062,8 @@ function holoSample() {
       const s = ly === 2 ? 1.9 + Math.random() * 1.4 :
         (e > 0.5 ? 1.5 : 1) + Math.random() * 1.1;
       all.push({
-        x, y, e, ly, l,
+        x: x * 0.5, y: y * 0.5, e, ly, l, dash,
+        len: 2.4 + Math.random() * 2.6,
         f: 0.5 + Math.random() * 1.1,
         ph: Math.random() * 6.283,
         v,
@@ -1061,9 +1072,8 @@ function holoSample() {
       });
     }
   }
-  // Квоты слоёв: тело ~4700, контур ~2700, искры ~950 — кадр остаётся
-  // дешёвым, а каждая часть анатомии читается
-  const QUOTA = [4700, 2700, 950];
+  // Квоты слоёв: тело ~5400, шерсть-контур ~2900, искры ~950
+  const QUOTA = [5400, 2900, 950];
   const pools = [[], [], []];
   for (let i = 0; i < all.length; i++) pools[all[i].ly].push(all[i]);
   const out = [];
@@ -1144,29 +1154,34 @@ function holoFrame(now) {
     if (p.ly === 2) {
       // Искры (глаза/нос/усы/подушечки): почти не текут, дышат, вспыхивают
       const tw = 0.55 + 0.45 * Math.sin(t * 2.1 + p.ph * 3.7);
-      ctx.fillStyle = HOLO_COLD[(0.30 * tw * pulse * 19) | 0];
+      ctx.fillStyle = HOLO_COLD[(0.38 * tw * pulse * 19) | 0];
       ctx.fillRect(x - p.s * 1.3, y - p.s * 1.3, p.s * 2.6, p.s * 2.6); // гало
-      let a = 0.55 * tw * pulse + scanGlow * 0.2;
+      let a = 0.72 * tw * pulse + scanGlow * 0.2;
       if (a > 1) a = 1;
       ctx.fillStyle = HOLO_SPARK[(a * 19) | 0];
       ctx.fillRect(x, y, p.s, p.s);
     } else if (p.ly === 1) {
-      // Контур и прожилки шерсти: яркие, живые
-      let a = (0.14 + p.e * 0.42) * pulse;
+      // Пряди шерсти: чёрточки вдоль локального направления (лапы, грудь,
+      // хвост идут текстурой, а не случайной пылью)
+      let a = (0.12 + p.e * 0.40) * pulse;
       if (Math.random() < 0.05) a += Math.random() * 0.22;
       a += scanGlow * 0.22;
       if (a > 1) a = 1;
       ctx.fillStyle = HOLO_HOT[(a * 19) | 0];
-      ctx.fillRect(x, y, p.s, p.s);
+      if (p.dash === 1) ctx.fillRect(x - p.len * 0.5, y - p.s * 0.3, p.len, p.s * 0.6);
+      else if (p.dash === 2) ctx.fillRect(x - p.s * 0.3, y - p.len * 0.5, p.s * 0.6, p.len);
+      else ctx.fillRect(x, y, p.s, p.s);
     } else {
-      // Тело: дымка в тоне генерата — светлые пряди ярче, тёмные провалы
-      // (между лапами, под грудью) темнее → анатомия читается изнутри
+      // Тело: дымка в тоне генерата + часть точек тянется в штрихи —
+      // светлые пряди ярче, тёмные провалы (между лапами) темнее
       let a = (0.05 + (p.l / 255) * 0.34) * pulse;
       if (Math.random() < 0.05) a += Math.random() * 0.18;
       a += scanGlow * 0.16;
       if (a > 1) a = 1;
       ctx.fillStyle = HOLO_COLD[(a * 19) | 0];
-      ctx.fillRect(x, y, p.s, p.s);
+      if (p.dash === 1) ctx.fillRect(x - p.len * 0.5, y - p.s * 0.3, p.len, p.s * 0.6);
+      else if (p.dash === 2) ctx.fillRect(x - p.s * 0.3, y - p.len * 0.5, p.s * 0.6, p.len);
+      else ctx.fillRect(x, y, p.s, p.s);
     }
   }
 

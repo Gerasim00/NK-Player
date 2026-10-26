@@ -623,7 +623,7 @@
     #home-cat-canvas {
       position: absolute; inset: 0; width: 100%; height: 100%;
       pointer-events: none;
-      filter: drop-shadow(0 0 3px #2f7bffaa) drop-shadow(0 0 16px #2f7bff44);
+      /* drop-shadow убран: на части GPU-связок фильтрованный слой целиком пропадает */
     }
     .cat-aura { animation: homeAura 4.5s ease-in-out infinite alternate; }
     @keyframes homeAura { from { opacity: .55; } to { opacity: .95; } }
@@ -1039,12 +1039,12 @@
                 <ellipse cx="210" cy="452" rx="236" ry="44" stroke-opacity=".2"/>
               </g>
 
-              <!-- Свечение за котом -->
-              <ellipse cx="210" cy="252" rx="122" ry="158" fill="url(#hg-aura)" filter="url(#hf-aura)" opacity=".7"/>
+              <!-- Свечение за котом (без filter — на части GPU редает слой целиком) -->
+              <ellipse cx="210" cy="252" rx="122" ry="158" fill="url(#hg-aura)" opacity=".62"/>
 
               <!-- Кот (вектор-подложка; при загрузке фото-маски гасим эту группу) -->
               <g id="home-cat-vector" opacity="1">
-                <g class="cat-aura" filter="url(#hf-aura)" stroke="#2f7bff" fill="#2f7bff" opacity=".75">
+                <g class="cat-aura" stroke="#2f7bff" fill="#2f7bff" opacity=".38">
                   <path d="M210 168 C167 168 142 138 142 104 C142 72 168 46 210 46 C252 46 278 72 278 104 C278 138 253 168 210 168 Z
                     M158 64 L136 16 L196 44 Z M262 64 L284 16 L224 44 Z
                     M210 176 C148 192 110 254 102 334 C96 396 116 448 158 464 L262 464 C304 448 324 396 318 334 C310 254 272 192 210 176 Z
@@ -1065,8 +1065,8 @@
 
                 <!-- Морда -->
                 <g>
-                  <path d="M178 102 q10 -10 22 0 q-10 9 -22 0 Z" fill="#d7f0ff" filter="url(#hf-soft)" opacity=".95"/>
-                  <path d="M220 102 q10 -10 22 0 q-10 9 -22 0 Z" fill="#d7f0ff" filter="url(#hf-soft)" opacity=".95"/>
+                  <path d="M178 102 q10 -10 22 0 q-10 9 -22 0 Z" fill="#d7f0ff" opacity=".95"/>
+                  <path d="M220 102 q10 -10 22 0 q-10 9 -22 0 Z" fill="#d7f0ff" opacity=".95"/>
                   <path d="M204 122 L216 122 L210 130 Z" fill="#9fd4ff" opacity=".8"/>
                   <path d="M210 130 q-6 8 -14 6 M210 130 q6 8 14 6" fill="none" stroke="#9fd4ff" stroke-opacity=".55" stroke-width="1.4"/>
                   <g stroke="#9fd4ff" stroke-opacity=".3" stroke-width="1.2">
@@ -1118,6 +1118,9 @@
             </svg>
             Настройки
           </button>
+
+          <!-- ВРЕМЕННО: диагностика голограммы (уберём после отладки) -->
+          <div id="holo-diag" style="margin-top:10px;font-size:11px;color:#5d86c0;opacity:.9;letter-spacing:.2px;text-align:center">holo: ждём init…</div>
         </div>
       </section>
 

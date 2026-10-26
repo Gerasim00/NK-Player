@@ -876,7 +876,8 @@ $('nav-home').addEventListener('click', () => openView({ type: 'home' }));
 // а вся сцена чуть наклоняется за курсором (параллакс). Единицы координат —
 // viewBox 420×520, в кадре рисуем прямо в них через setTransform.
 const HOLO = {
-  canvas: null, ctx: null, wrap: null, parts: [], mask: null,
+  canvas: null, ctx: null, wrap: null, parts: [],
+  mask: null, maskImg: null, maskParts: 0, rasterOK: true,
   inited: false, running: false, raf: 0, t0: 0,
   k: 1, glitch: null,
   tilt: { x: 0, y: 0, tx: 0, ty: 0 }
@@ -896,20 +897,20 @@ for (let i = 0; i < 20; i++) {
 (function preloadCatMask() {
   const im = new Image();
   im.onload = () => {
-    const probe = holoSampleWithMask(im);
-    const vec = document.getElementById('home-cat-vector');
-    if (probe.length > 300) {
-      HOLO.mask = im;
-      if (vec) vec.style.opacity = '0';
-      if (HOLO.inited) HOLO.parts = probe;
-      console.log('[holo] маска активна:', probe.length, 'частиц');
-    } else {
-      console.warn('[holo] сэмпл из маски пуст (' + probe.length + ') — остаёмся на векторном коте');
-    }
+    HOLO.maskImg = im;
+    HOLO.maskParts = holoSampleWithMask(im).length;
+    console.log('[holo] маска загружена, сэмпл:', HOLO.maskParts);
+    // если инициализация уже прошла (файл догрузился позже) — применяем маску сейчас
+    if (HOLO.inited) applyHoloMaskChoice();
+    updateHoloDiag();
   };
-  im.onerror = () => console.warn('[holo] маска не загрузилась — остаёмся на векторном коте');
+  im.onerror = () => {
+    console.warn('[holo] маска не загрузилась — остаёмся на векторном коте');
+    updateHoloDiag();
+  };
   im.src = 'assets/cat-sil.png';
 })();
+
 // Сэмплирование с подменённой маской (до назначения HOLO.mask — для пробы)
 function holoSampleWithMask(im) {
   const saved = HOLO.mask;
@@ -917,6 +918,50 @@ function holoSampleWithMask(im) {
   const out = holoSample();
   HOLO.mask = saved;
   return out;
+}
+
+// Самотест растрового вывода canvas: на редких GPU-связках слой может молча
+// не рисоваться — тогда показываем векторного кота (SVG)
+function holoRasterTest() {
+  try {
+    const c = document.createElement('canvas');
+    c.width = 8; c.height = 8;
+    const x = c.getContext('2d');
+    x.fillStyle = '#ffffff';
+    x.fillRect(0, 0, 8, 8);
+    return x.getImageData(4, 4, 1, 1).data[0] === 255;
+  } catch (e) { return false; }
+}
+
+// Единая точка решения: фото-маску используем, только если она сэмплируется
+// и растровый вывод работает; иначе — векторный кот
+function applyHoloMaskChoice() {
+  const useMask = !!HOLO.maskImg && HOLO.maskParts > 300 && HOLO.rasterOK;
+  HOLO.mask = useMask ? HOLO.maskImg : null;
+  const vec = document.getElementById('home-cat-vector');
+  if (vec) vec.style.opacity = useMask ? '0' : '1';
+  if (useMask) {
+    if (HOLO.inited) HOLO.parts = holoSample();
+    console.log('[holo] маска активна:', HOLO.maskParts, 'частиц');
+  } else {
+    console.warn('[holo] векторный кот: maskOk=' + !!HOLO.maskImg +
+      ' parts=' + HOLO.maskParts + ' rasterOK=' + HOLO.rasterOK);
+  }
+  return useMask;
+}
+
+// ВРЕМЕННО: экранная диагностика голограммы (уберём после отладки)
+function updateHoloDiag() {
+  const el = document.getElementById('holo-diag');
+  if (!el) return;
+  const c = HOLO.canvas;
+  el.textContent = 'holo: parts=' + HOLO.parts.length +
+    ' · mask=' + (HOLO.mask ? 'да' : 'нет') + '(' + HOLO.maskParts + ')' +
+    ' · raster=' + (HOLO.rasterOK ? 'ок' : 'СЛОМАН') +
+    ' · buf=' + (c ? c.width + '×' + c.height : '—') +
+    ' · cssW=' + (c ? c.clientWidth : '—') +
+    ' · k=' + (HOLO.k || 0).toFixed(2) +
+    ' · run=' + (HOLO.running ? 'да' : 'нет');
 }
 
 // Морда поверх частиц (только в режиме фото-маски): светящиеся глаза-щёлки
@@ -1026,6 +1071,7 @@ function holoResize() {
   el.height = Math.round(w * (520 / 420) * dpr);
   HOLO.k = el.width / 420;
   HOLO.ctx.setTransform(HOLO.k, 0, 0, HOLO.k, 0, 0);
+  updateHoloDiag();
 }
 
 function initHolo() {
@@ -1033,6 +1079,8 @@ function initHolo() {
   HOLO.canvas = $('home-cat-canvas');
   HOLO.wrap = $('holo-tilt');
   if (!HOLO.canvas || !HOLO.wrap) return false;
+  HOLO.rasterOK = holoRasterTest();
+  applyHoloMaskChoice();
   HOLO.ctx = HOLO.canvas.getContext('2d');
   HOLO.parts = holoSample();
   holoResize();
@@ -1040,6 +1088,7 @@ function initHolo() {
   if (HOLO.inited) {
     new ResizeObserver(() => { if (HOLO.inited) holoResize(); }).observe(HOLO.canvas);
   }
+  updateHoloDiag();
   return HOLO.inited;
 }
 
@@ -1100,6 +1149,7 @@ function startHoloCat() {
   HOLO.running = true;
   if (!HOLO.t0) HOLO.t0 = performance.now();
   HOLO.raf = requestAnimationFrame(holoFrame);
+  updateHoloDiag();
 }
 
 function stopHoloCat() {
@@ -1109,6 +1159,7 @@ function stopHoloCat() {
   HOLO.glitch = null;
   if (HOLO.ctx) HOLO.ctx.clearRect(0, 0, 420, 520);
   HOLO.tilt.tx = 0; HOLO.tilt.ty = 0;
+  updateHoloDiag();
 }
 
 // Параллакс: слушаем сцену целиком, амплитуды малые — эффект вглубь

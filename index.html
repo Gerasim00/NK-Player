@@ -651,6 +651,23 @@
     .home-settings:hover { border-color: #3f7dff; box-shadow: 0 0 26px #2f7bff59; }
     .home-settings svg { flex: none; opacity: .9; }
 
+    /* ---------- Окно обновлений ---------- */
+    #update-backdrop {
+      position: fixed; inset: 0; z-index: 85;
+      display: flex; align-items: center; justify-content: center;
+      background: #050713cc;
+    }
+    #update-backdrop.hidden { display: none; }
+    #update-backdrop .settings { width: 500px; max-height: none; }
+    .upd-version { color: var(--muted); font-size: 12.5px; }
+    .upd-version b { color: var(--text); font-weight: 600; }
+    .upd-status { color: var(--muted); font-size: 13px; line-height: 1.55; margin: 14px 0 16px; min-height: 40px; }
+    .upd-progress { display: flex; align-items: center; gap: 12px; margin: 14px 0 16px; }
+    .upd-track { flex: 1; height: 8px; border-radius: 999px; background: #182347; overflow: hidden; }
+    .upd-bar { height: 100%; width: 0%; border-radius: 999px; background: linear-gradient(90deg, #2f7bff, #4fd0ff); transition: width .2s; }
+    .upd-pct { font-size: 12px; color: #cfd8ff; min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
+    .upd-actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
+
     /* ---------- Плашка обновления ---------- */
     /* Плашка висит внизу справа: сверху она перекрывала «Фильтр» и «Перемешать» */
     #update-banner {
@@ -710,6 +727,11 @@
     </div>
     <div class="tb-spacer"></div>
     <div class="tb-controls">
+      <button id="btn-update" class="tb-btn" title="Обновления" aria-label="Обновления">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 4v11"/><path d="M7.5 11.5 12 16l4.5-4.5"/><path d="M4 20h16"/>
+        </svg>
+      </button>
       <button id="btn-settings" class="tb-btn" title="Настройки" aria-label="Настройки">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="3.2"/>
@@ -794,6 +816,32 @@
 
       <div class="settings-foot">
         <button id="settings-done" class="btn">Готово</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Окно обновлений -->
+  <div id="update-backdrop" class="hidden">
+    <div class="settings" role="dialog" aria-modal="true">
+      <div class="settings-head">
+        <h3>Обновления</h3>
+        <button id="upd-close" class="tb-btn" title="Закрыть" aria-label="Закрыть">
+          <svg width="10" height="10" viewBox="0 0 10 10"><path d="M0.5 0.5l9 9M9.5 0.5l-9 9" stroke="currentColor" stroke-width="1.2"/></svg>
+        </button>
+      </div>
+
+      <div class="upd-version">Текущая версия: <b id="upd-current">—</b></div>
+      <div id="upd-status" class="upd-status">Проверим наличие новой версии на GitHub. Если она есть — скачаем и установим тихо.</div>
+      <div id="upd-progress" class="upd-progress hidden">
+        <div class="upd-track"><div id="upd-bar" class="upd-bar"></div></div>
+        <span class="upd-pct" id="upd-pct">0%</span>
+      </div>
+
+      <div class="upd-actions">
+        <button id="upd-open" class="btn-ghost hidden">Открыть страницу релиза</button>
+        <button id="upd-install-btn" class="btn hidden">Скачать и установить</button>
+        <button id="upd-apply" class="btn hidden">Установить сейчас</button>
+        <button id="upd-check" class="btn-ghost">Проверить</button>
       </div>
     </div>
   </div>

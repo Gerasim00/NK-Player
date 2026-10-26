@@ -2624,6 +2624,154 @@ function bindSettingsUI() {
 
 bindSettingsUI();
 
+// ---------------------------------------------------------------- Окно обновлений
+
+// Кнопка ⬇ в титульной панели: проверка релиза, фоновое скачивание с прогрессом
+// и тихая установка через NSIS /S (установщик сам подменяет файлы и перезапускает).
+let updApply = null;  // { asset, latest, current, pageUrl } — когда доступна новая версия
+let updBusy = false;  // идёт скачивание
+let updFile = null;   // { done, error } — результат скачивания, переживает закрытие окна
+
+function updSetStatus(text) {
+  $('upd-status').textContent = text;
+}
+
+function updShow({ open = false, install = false, apply = false, check = true } = {}) {
+  $('upd-open').classList.toggle('hidden', !open);
+  $('upd-install-btn').classList.toggle('hidden', !install);
+  $('upd-apply').classList.toggle('hidden', !apply);
+  $('upd-check').classList.toggle('hidden', !check);
+}
+
+function updProgress(on, percent, received, total) {
+  $('upd-progress').classList.toggle('hidden', !on);
+  if (on) {
+    $('upd-bar').style.width = `${Math.max(3, percent || 0)}%`;
+    $('upd-pct').textContent = `${percent || 0}%`;
+    updSetStatus(`Скачиваем обновление… ${fmtSize(received)} из ${fmtSize(total)}`);
+  }
+}
+
+function openUpdateModal() {
+  $('upd-current').textContent = $('app-version').textContent || '';
+  if (updBusy) {
+    updSetStatus('Скачивание идёт в фоне — прогресс появится, как только придёт следующий пакет данных.');
+    updShow({});
+  } else if (!updFile) {
+    updSetStatus('Проверим наличие новой версии на GitHub. Если она есть — скачаем и установим тихо.');
+    updShow({});
+  } else if (updFile.done) {
+    updSetStatus('Установщик уже скачан и готов. Тихая установка закроет плеер и откроет его обновлённым.');
+    updShow({ apply: true });
+  } else if (updFile.error) {
+    updSetStatus('Предыдущая попытка не удалась: ' + updFile.error);
+    updShow({ install: updApply ? true : false, open: !!updApply });
+  }
+  $('update-backdrop').classList.remove('hidden');
+}
+
+function closeUpdateModal() {
+  $('update-backdrop').classList.add('hidden');
+}
+
+// Проверка релиза (кнопка «Проверить»)
+async function updCheckFlow() {
+  const btn = $('upd-check');
+  btn.disabled = true;
+  btn.textContent = 'Проверяем…';
+  updSetStatus('Смотрим последний релиз на GitHub…');
+  try {
+    const res = await ipcRenderer.invoke('update:check', { force: true });
+    const info = res && res.success ? res.data : null;
+    if (!info) throw new Error((res && res.error) || 'Нет ответа');
+    if (info.error) {
+      updSetStatus('Ошибка проверки: ' + info.error);
+      updShow({});
+    } else if (info.updateAvailable && info.asset && info.asset.url) {
+      updApply = { asset: info.asset, latest: info.latest, current: info.current, pageUrl: info.url };
+      updFile = null;
+      const notes = info.notes ? ' ' + String(info.notes).split('\n')[0].slice(0, 120) : '';
+      updSetStatus(`Доступна версия ${versionLabel(info.latest)} · ${fmtSize(info.asset.size)}.${notes}`);
+      updShow({ install: true, open: true });
+      showUpdateBanner(info);
+    } else if (info.updateAvailable) {
+      updSetStatus(`Доступна версия ${versionLabel(info.latest)}, но у релиза нет exe-файла — откройте страницу и скачайте вручную.`);
+      updShow({ open: true });
+    } else {
+      updSetStatus(`У вас самая свежая версия (v${info.current}).`);
+      updShow({});
+    }
+  } catch (err) {
+    updSetStatus('Не удалось проверить: ' + (err.message || 'нет связи'));
+    updShow({});
+  }
+  btn.disabled = false;
+  btn.textContent = 'Проверить';
+}
+
+// Скачивание установщика с прогрессом; закрытие окна загрузку не прерывает
+async function updInstallFlow() {
+  const info = updApply;
+  if (!info || !info.asset || !info.asset.url) return;
+  const btn = $('upd-install-btn');
+  btn.disabled = true;
+  updBusy = true;
+  updProgress(true, 0, 0, info.asset.size);
+  try {
+    const res = await ipcRenderer.invoke('update:download', {
+      url: info.asset.url,
+      size: info.asset.size,
+      version: info.latest
+    });
+    if (!res || !res.success) throw new Error((res && res.error) || 'Скачивание не удалось');
+    updFile = { done: true, path: res.data.filePath };
+    updSetStatus('Готово. Запуск тихой установки закроет плеер и обновит его до ' + versionLabel(info.latest) + '.');
+    updShow({ apply: true, open: true });
+    toast('Обновление скачано — можно устанавливать');
+  } catch (err) {
+    updFile = { done: false, error: err.message || 'нет связи' };
+    updSetStatus('Не получилось скачать: ' + updFile.error);
+    updShow({ install: true, open: true });
+  }
+  updProgress(false);
+  updBusy = false;
+  btn.disabled = false;
+}
+
+$('btn-update').addEventListener('click', openUpdateModal);
+$('upd-close').addEventListener('click', closeUpdateModal);
+$('update-backdrop').addEventListener('mousedown', (e) => {
+  if (e.target === $('update-backdrop')) closeUpdateModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('update-backdrop').classList.contains('hidden')) closeUpdateModal();
+});
+
+$('upd-check').addEventListener('click', updCheckFlow);
+$('upd-install-btn').addEventListener('click', updInstallFlow);
+
+$('upd-apply').addEventListener('click', async () => {
+  if (!updFile || !updFile.done) return;
+  updSetStatus('Запускаю тихую установку — плеер сейчас закроется…');
+  $('upd-apply').disabled = true;
+  const res = await ipcRenderer.invoke('update:install');
+  if (!res || !res.success) {
+    $('upd-apply').disabled = false;
+    updSetStatus('Не удалось запустить установщик: ' + ((res && res.error) || 'неизвестная ошибка'));
+  }
+  // Прогресс-бар больше не нужен, но окно оставляем: пока приложение живёт, видно статус
+});
+
+$('upd-open').addEventListener('click', () => {
+  if (updApply && updApply.pageUrl) ipcRenderer.invoke('app:openExternal', updApply.pageUrl);
+});
+
+// Прогресс скачивания шлёт main-процесс
+ipcRenderer.on('update:download-progress', (e, p) => {
+  if (!updBusy || !p) return;
+  updProgress(true, p.percent, p.received, p.total);
+});
+
 function buildEqUI() {
   const bands = $('eq-bands');
   bands.textContent = '';

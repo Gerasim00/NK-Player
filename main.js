@@ -1,6 +1,9 @@
-const { app, BrowserWindow, WebContentsView, ipcMain, session, dialog, Menu, shell } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, session, dialog, Menu, shell, net } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { spawn } = require('node:child_process');
+const { Readable } = require('node:stream');
+const { pipeline } = require('node:stream/promises');
 const vk = require('./vk-audio');
 const localMusic = require('./local-music');
 const library = require('./library');
@@ -328,6 +331,98 @@ ipcMain.handle('app:version', () => ({ success: true, data: app.getVersion() }))
 ipcMain.handle('update:check', async (e, arg) => {
   try {
     return { success: true, data: await updates.check({ force: !!(arg && arg.force) }) };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// ---------------------------------------------------------------- Обновление: скачивание и тихая установка
+
+// Состояние последнего скачанного установщика; переживает закрытие окна обновлений
+const upd = { filePath: '', version: '', bytes: 0 };
+
+function updatesDir() {
+  const dir = path.join(app.getPath('userData'), 'updates');
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+ipcMain.handle('update:download', async (e, arg) => {
+  let part = '';
+  try {
+    const url = String((arg && arg.url) || '');
+    const size = Number((arg && arg.size) || 0);
+    const version = String((arg && arg.version) || '');
+    if (!/^https:\/\//.test(url)) throw new Error('Некорректная ссылка');
+
+    // Старые установщики не нужны — каждый раз качаем свежий релиз заново
+    const dir = updatesDir();
+    for (const f of fs.readdirSync(dir)) {
+      try { fs.unlinkSync(path.join(dir, f)); } catch (err) { /* занят — пропустим */ }
+    }
+
+    let fileName = '';
+    try {
+      fileName = path.basename(new URL(url).pathname) || '';
+    } catch (err) { fileName = ''; }
+    if (!/\.exe$/i.test(fileName)) fileName = `NK-Player-Setup-${version || 'new'}.exe`;
+
+    part = path.join(dir, fileName + '.part');
+    const res = await net.fetch(url, {
+      headers: { 'User-Agent': 'NK-Player Updater', Accept: 'application/octet-stream' },
+      redirect: 'follow'
+    });
+    if (!res.ok || !res.body) throw new Error(`GitHub вернул HTTP ${res.status}`);
+    const total = Number(res.headers.get('content-length') || 0) || size;
+
+    // Поток качаем в файл, прогресс — в окно плеера (не чаще ~6 раз в секунду)
+    let received = 0;
+    let lastAt = 0;
+    const body = Readable.fromWeb(res.body);
+    body.on('data', (chunk) => {
+      received += chunk.length;
+      const now = Date.now();
+      if (now - lastAt > 150 && !e.sender.isDestroyed()) {
+        lastAt = now;
+        e.sender.send('update:download-progress', {
+          received,
+          total,
+          percent: total ? Math.min(100, Math.round(received / total * 100)) : 0
+        });
+      }
+    });
+
+    await pipeline(body, fs.createWriteStream(part));
+
+    const bytes = fs.statSync(part).size;
+    // Размер либо совпал, либо расходится не более чем на мегабайт/2% — защита от обрыва
+    if (size && (Math.abs(bytes - size) > size * 0.02) && Math.abs(bytes - size) > 1048576) {
+      throw new Error('Файл скачался не полностью, попробуйте ещё раз');
+    }
+
+    const finalPath = path.join(dir, fileName);
+    fs.renameSync(part, finalPath);
+    part = '';
+    upd.filePath = finalPath;
+    upd.version = version;
+    upd.bytes = bytes;
+    return { success: true, data: { filePath: finalPath, bytes } };
+  } catch (err) {
+    try { if (part) fs.unlinkSync(part); } catch (err2) { /* ок */ }
+    return { success: false, error: err.message };
+  }
+});
+
+// Тихая установка: NSIS /S, затем отдаём фокус установщику и выходим.
+// Установщик при /S сам закрывает работающий экземпляр и обновляет файлы.
+ipcMain.handle('update:install', async () => {
+  try {
+    if (!upd.filePath || !fs.existsSync(upd.filePath)) {
+      return { success: false, error: 'Установщик ещё не скачан' };
+    }
+    spawn(upd.filePath, ['/S'], { detached: true, stdio: 'ignore' }).unref();
+    setTimeout(() => app.quit(), 1000);
+    return { success: true };
   } catch (err) {
     return { success: false, error: err.message };
   }

@@ -44,8 +44,18 @@ async function fetchLatest() {
     tag: String(data.tag_name || ''),
     url: String(data.html_url || `https://github.com/${REPO}/releases`),
     notes: String(data.body || '').slice(0, 2000),
-    published: data.published_at || ''
+    published: data.published_at || '',
+    asset: pickInstaller(data.assets || [])
   };
+}
+
+// Из списка ассетов релиза выбираем установочный exe (не blockmap, не zip)
+function pickInstaller(assets) {
+  const list = Array.isArray(assets) ? assets : [];
+  const exe = list.find((a) => /setup.*\.exe$/i.test(String(a && a.name || ''))) ||
+    list.find((a) => /\.exe$/i.test(String(a && a.name || '')) && !/blockmap/i.test(String(a && a.name || '')));
+  if (!exe) return null;
+  return { name: String(exe.name || ''), size: Number(exe.size) || 0, url: String(exe.browser_download_url || '') };
 }
 
 async function check({ force = false } = {}) {
@@ -68,6 +78,7 @@ async function check({ force = false } = {}) {
     url: latest ? latest.url : `https://github.com/${REPO}/releases`,
     notes: latest ? latest.notes : '',
     published: latest ? latest.published : '',
+    asset: latest ? (latest.asset || null) : null,
     updateAvailable: !!(latest && latest.tag && compare(latest.tag, current) > 0),
     error
   };

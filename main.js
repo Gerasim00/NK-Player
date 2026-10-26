@@ -104,6 +104,12 @@ function createWindow() {
   });
 
   Menu.setApplicationMenu(null);
+  // Проброс консоли рендерера в stdout — видно логи при запуске из терминала/npm start
+  mainWindow.webContents.on('console-message', (...args) => {
+    const ev = args[0];
+    const msg = ev && typeof ev === 'object' && 'message' in ev ? ev.message : args[2];
+    if (typeof msg === 'string') console.log('[renderer]', msg);
+  });
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
   mainWindow.once('ready-to-show', () => mainWindow.show());
 

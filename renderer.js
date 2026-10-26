@@ -896,13 +896,28 @@ for (let i = 0; i < 20; i++) {
 (function preloadCatMask() {
   const im = new Image();
   im.onload = () => {
-    HOLO.mask = im;
+    const probe = holoSampleWithMask(im);
     const vec = document.getElementById('home-cat-vector');
-    if (vec) vec.style.opacity = '0';
-    if (HOLO.inited) HOLO.parts = holoSample();
+    if (probe.length > 300) {
+      HOLO.mask = im;
+      if (vec) vec.style.opacity = '0';
+      if (HOLO.inited) HOLO.parts = probe;
+      console.log('[holo] маска активна:', probe.length, 'частиц');
+    } else {
+      console.warn('[holo] сэмпл из маски пуст (' + probe.length + ') — остаёмся на векторном коте');
+    }
   };
+  im.onerror = () => console.warn('[holo] маска не загрузилась — остаёмся на векторном коте');
   im.src = 'assets/cat-sil.png';
 })();
+// Сэмплирование с подменённой маской (до назначения HOLO.mask — для пробы)
+function holoSampleWithMask(im) {
+  const saved = HOLO.mask;
+  HOLO.mask = im;
+  const out = holoSample();
+  HOLO.mask = saved;
+  return out;
+}
 
 // Морда поверх частиц (только в режиме фото-маски): светящиеся глаза-щёлки
 // с редким миганием и тонкие усы — координаты сняты с референса
@@ -938,28 +953,32 @@ function drawHoloFace(ctx, t) {
 
 function holoSample() {
   // Поле альфы 420×520: фото-маска (assets/cat-sil.png), если загрузилась,
-  // иначе — векторный силуэт #home-cat-body как fallback
+  // иначе — векторный силуэт #home-cat-body как fallback.
+  // Без ctx.filter (на части GPU-связок он отрисовывается пустотой): мягкий край
+  // делаем полупрозрачной подложкой чуть большего размера — «подшёрсток».
+  const off = document.createElement('canvas');
+  off.width = 420; off.height = 520;
+  const octx = off.getContext('2d', { willReadFrequently: true });
   let aAt;
   if (HOLO.mask) {
-    const off = document.createElement('canvas');
-    off.width = 420; off.height = 520;
-    const octx = off.getContext('2d', { willReadFrequently: true });
-    octx.filter = 'blur(1.1px)';
     octx.drawImage(HOLO.mask, 0, 0, 420, 520);
-    octx.filter = 'none';
+    octx.globalAlpha = 0.42;
+    octx.drawImage(HOLO.mask, -7, -7, 434, 534);
+    octx.globalAlpha = 1;
     const img = octx.getImageData(0, 0, 420, 520).data;
     aAt = (x, y) => img[(y * 420 + x) * 4 + 3];
   } else {
     const pathEl = $('home-cat-body');
     if (!pathEl) return [];
-    const off = document.createElement('canvas');
-    off.width = 420; off.height = 520;
-    const octx = off.getContext('2d', { willReadFrequently: true });
-    // Мягкий край даёт градиентную кайму: из неё берём «волоски» вдоль контура
-    octx.filter = 'blur(1.4px)';
+    const path = new Path2D(pathEl.getAttribute('d'));
     octx.fillStyle = '#fff';
-    octx.fill(new Path2D(pathEl.getAttribute('d')));
-    octx.filter = 'none';
+    octx.fill(path);
+    octx.globalAlpha = 0.42;
+    octx.strokeStyle = '#fff';
+    octx.lineWidth = 8;
+    octx.lineJoin = 'round';
+    octx.stroke(path); // расширенная мягкая кайма
+    octx.globalAlpha = 1;
     const img = octx.getImageData(0, 0, 420, 520).data;
     aAt = (x, y) => img[(y * 420 + x) * 4 + 3];
   }

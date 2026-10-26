@@ -1040,16 +1040,22 @@ function holoSample() {
       const glx = lumAt ? lumAt(xb, y) - lumAt(xa, y) : 0;
       const gly = lumAt ? lumAt(x, yb) - lumAt(x, ya) : 0;
       let e = Math.max(Math.min(1, gradA / 340), Math.min(1, (Math.abs(glx) + Math.abs(gly)) / 260));
-      if (a < 145) { // мягкая «пушистая» кайма силуэта — реже
-        if (e < 0.5 && Math.random() > 0.32) continue;
-        e = Math.max(e, 0.72);
-      }
-      // Плотность повторяет яркость генерата мягче: светлые пряди чаще,
-      // тёмные провалы реже — но без локальных «куч» (светлая грудка
-      // источника не должна срастаться в пятно)
-      if (e < 0.45) {
-        const keep = Math.min(1, 0.35 + l / 600);
-        if (Math.random() > keep) continue;
+      // Чёткая линия силуэта: пограничная полоса альфы с крутым градиентом —
+      // банда a 60..200 и gradA>=160. Такие точки идут мимо случайных
+      // прореживаний (нить должна быть сплошной)
+      const isEdge = gradA >= 160 && a >= 60 && a <= 200;
+      if (!isEdge) {
+        if (a < 145) { // мягкая «пушистая» кайма силуэта — реже
+          if (e < 0.5 && Math.random() > 0.32) continue;
+          e = Math.max(e, 0.72);
+        }
+        // Плотность повторяет яркость генерата мягче: светлые пряди чаще,
+        // тёмные провалы реже — но без локальных «куч» (светлая грудка
+        // источника не должна срастаться в пятно)
+        if (e < 0.45) {
+          const keep = Math.min(1, 0.35 + l / 600);
+          if (Math.random() > keep) continue;
+        }
       }
       // Особенные детали (прямоугольники в координатах 420×520 под текущий
       // генерат): передние лапы, уши, хвост с завитком. Приоритет: лапы → уши → хвост
@@ -1066,13 +1072,16 @@ function holoSample() {
       if (ly === 2 && uy >= 122 && uy <= 174 &&
         (ux >= 146 && ux <= 198 || ux >= 234 && ux <= 292)) continue;
       const rg = ly === 2 ? 2 + Math.random() * 7 :
+        isEdge ? 4 + Math.random() * 8 :
         ly === 1 ? 5 + Math.random() * 15 : 8 + Math.random() * 30;
       const v = ly === 2 ? 0.05 + Math.random() * 0.13 :
+        isEdge ? 0.10 + Math.random() * 0.14 :
         ly === 1 ? 0.10 + Math.random() * 0.20 : 0.16 + Math.random() * 0.36;
       const s = ly === 2 ? 1.9 + Math.random() * 1.4 :
+        isEdge ? 1.1 + Math.random() * 0.8 :
         (e > 0.5 ? 1.5 : 1) + Math.random() * 1.1;
       all.push({
-        x: x * 0.5, y: y * 0.5, e, ly, l, z,
+        x: x * 0.5, y: y * 0.5, e, ly, l, z, edge: isEdge ? 1 : 0,
         f: 0.5 + Math.random() * 1.1,
         ph: Math.random() * 6.283,
         v,
@@ -1081,16 +1090,21 @@ function holoSample() {
       });
     }
   }
-  // Квоты слоёв: тело ~5400, шерсть-контур ~2900, искры ~950
-  const QUOTA = [5400, 2900, 950];
-  const pools = [[], [], []];
-  for (let i = 0; i < all.length; i++) pools[all[i].ly].push(all[i]);
+  // Квоты слоёв: тело, чёткая линия силуэта, внутренняя фактура контура, искры.
+  // Линия — отдельный пул со строчным шагом: она ложится равномерно по
+  // всему периметру, а не гуще сверху
+  const QUOTA = [5000, 2500, 1500, 950];
+  const pools = [[], [], [], []]; // 0 тело, 1 линия, 2 внутренний контур, 3 искры
+  for (let i = 0; i < all.length; i++) {
+    const p = all[i];
+    pools[p.ly === 0 ? 0 : p.ly === 2 ? 3 : (p.edge ? 1 : 2)].push(p);
+  }
   const out = [];
-  for (let ly = 0; ly < 3; ly++) {
-    const pool = pools[ly];
-    if (pool.length > QUOTA[ly]) {
-      const stride = pool.length / QUOTA[ly];
-      for (let i = 0; i < QUOTA[ly]; i++) out.push(pool[(i * stride) | 0]);
+  for (let k = 0; k < 4; k++) {
+    const pool = pools[k];
+    if (pool.length > QUOTA[k]) {
+      const stride = pool.length / QUOTA[k];
+      for (let i = 0; i < QUOTA[k]; i++) out.push(pool[(i * stride) | 0]);
     } else {
       for (let i = 0; i < pool.length; i++) out.push(pool[i]);
     }
@@ -1172,17 +1186,27 @@ function holoFrame(now) {
       ctx.fillStyle = HOLO_SPARK[(a * 19) | 0];
       ctx.fillRect(x, y, p.s, p.s);
     } else if (p.ly === 1) {
-      // Контур: лапы и хвост — главные акценты (ярче, крупнее), уши —
-      // вполсилы, прочий контур — мягкая подсветка силуэта
-      const az = p.z === 1 || p.z === 3;
-      const f = az ? 1.45 : p.z === 2 ? 0.85 : 0.5;
-      let a = (0.12 + p.e * 0.40) * pulse * f;
-      if (Math.random() < (az ? 0.08 : 0.03)) a += Math.random() * 0.22;
-      a += scanGlow * (az ? 0.35 : 0.12);
-      if (a > 1) a = 1;
-      ctx.fillStyle = HOLO_HOT[(a * 19) | 0];
-      const sm = az ? 1.3 : 1;
-      ctx.fillRect(x, y, p.s * sm, p.s * sm);
+      if (p.edge) {
+        // Чёткая линия силуэта: непрерывная нить мелких частиц по границе
+        let a = (0.34 + p.e * 0.18) * pulse;
+        if (Math.random() < 0.05) a += Math.random() * 0.2;
+        a += scanGlow * 0.3;
+        if (a > 1) a = 1;
+        ctx.fillStyle = HOLO_HOT[(a * 19) | 0];
+        ctx.fillRect(x, y, p.s, p.s);
+      } else {
+        // Внутренняя фактура: лапы/хвост — главные акценты, уши — вполсилы,
+        // прочий контур — мягкая подсветка
+        const az = p.z === 1 || p.z === 3;
+        const f = az ? 1.45 : p.z === 2 ? 0.85 : 0.45;
+        let a = (0.12 + p.e * 0.40) * pulse * f;
+        if (Math.random() < (az ? 0.08 : 0.03)) a += Math.random() * 0.22;
+        a += scanGlow * (az ? 0.35 : 0.12);
+        if (a > 1) a = 1;
+        ctx.fillStyle = HOLO_HOT[(a * 19) | 0];
+        const sm = az ? 1.3 : 1;
+        ctx.fillRect(x, y, p.s * sm, p.s * sm);
+      }
     } else {
       // Тело: спокойная ровная дымка с потолком яркости — светлые пятна
       // источника (грудка) не срастаются в дефокусный сгусток; в лапах и

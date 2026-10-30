@@ -551,26 +551,51 @@
     .modal-foot { display: flex; justify-content: flex-end; gap: 8px; }
 
     /* ---------- Настройки ---------- */
-    #settings-backdrop,
-    #smart-backdrop {
+    #settings-backdrop {
       position: fixed; inset: 0; z-index: 80;
       display: flex; align-items: center; justify-content: center;
       background: #050713cc;
     }
-    #settings-backdrop.hidden, #smart-backdrop.hidden { display: none; }
+    #settings-backdrop.hidden { display: none; }
     .settings {
-      width: 560px; max-width: calc(100vw - 48px);
+      width: 720px; max-width: calc(100vw - 48px);
       max-height: 86vh; display: flex; flex-direction: column;
       background: var(--panel-2, #10162f);
       border: 1px solid var(--border); border-radius: 14px;
       box-shadow: 0 30px 80px -24px #000000e0;
       padding: 16px 20px 18px;
     }
-    .settings-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+    /* Высота фиксирована, иначе окно прыгает при смене группы */
+    #settings-backdrop .settings { height: min(86vh, 660px); }
+    .settings-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
     .settings-head h3 { margin: 0; font-size: 16px; }
-    .settings-scroll { overflow-y: auto; min-height: 0; }
+    /* Слева — список групп параметров, справа — строки выбранной группы */
+    .settings-body { display: flex; gap: 18px; flex: 1; min-height: 0; }
+    .settings-nav {
+      flex: none; width: 170px; display: flex; flex-direction: column; gap: 2px;
+      padding-right: 14px; border-right: 1px solid var(--border); overflow-y: auto;
+    }
+    .s-nav-item {
+      text-align: left; background: none; border: 0; font: inherit; font-size: 13px;
+      color: var(--muted); padding: 9px 10px; border-radius: 8px; cursor: pointer;
+      transition: background .15s, color .15s;
+    }
+    .s-nav-item:hover { background: var(--hover); color: var(--text); }
+    .s-nav-item.active {
+      background: #2f7bff1a; color: var(--text); font-weight: 600;
+      box-shadow: inset 2px 0 0 var(--accent);
+    }
+    /* «О программе» — не параметр, а справка: держим её внизу колонки */
+    .s-nav-item[data-group="about"] {
+      position: relative; margin-top: auto; padding-top: 12px; border-radius: 8px;
+    }
+    .s-nav-item[data-group="about"]::before {
+      content: ''; position: absolute; left: 10px; right: 10px; top: 0;
+      height: 1px; background: var(--border);
+    }
+    .settings-scroll { flex: 1; min-width: 0; overflow-y: auto; padding-right: 4px; }
     .settings .sec {
-      margin: 14px 0 2px; color: var(--muted);
+      margin: 0 0 2px; color: var(--muted);
       font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
     }
     .s-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid #141b33; }
@@ -594,49 +619,81 @@
     .settings-foot { display: flex; justify-content: flex-end; margin-top: 12px; }
     .btn-ghost.danger:hover { background: #ff5c7a22; color: var(--danger); }
 
-    /* ---------- Умный режим (NK-Wave) ---------- */
-    .smart-tabs { display: flex; gap: 6px; margin: 10px 0 2px; }
-    .smart-tab {
-      flex: 1; padding: 8px 6px; border-radius: 9px; border: 1px solid #1a2342;
-      background: #0d1330; color: var(--muted); font-size: 12.5px; cursor: pointer;
+    /* ---------- «О программе» ---------- */
+    /* min-height:100% прижимает кнопки-ссылки к низу области, даже если текста мало */
+    .s-group[data-group="about"] {
+      display: flex; flex-direction: column;
+      min-height: 100%; padding-bottom: 4px;
     }
-    .smart-tab:hover { color: var(--text); }
-    .smart-tab.on { background: #1c2a5c; border-color: #3855b4; color: #dbe7ff; }
-    .smart-pane { display: none; }
-    .smart-pane.on { display: block; }
-    .smart-search {
-      width: 100%; margin-top: 10px; padding: 8px 12px; box-sizing: border-box;
-      background: #0b1029; border: 1px solid var(--border); border-radius: 9px;
-      color: var(--text); font-size: 13px; outline: none;
+    .about-hero { text-align: center; padding: 16px 0 0; }
+    .about-logo {
+      width: 96px; height: 96px; margin: 0 auto 14px; border-radius: 50%;
+      box-shadow: 0 0 40px -6px #2f7bff99, 0 0 0 1px #2f7bff33;
     }
-    .smart-search:focus { border-color: #3f7dff; }
-    .smart-list { margin-top: 8px; min-height: 120px; max-height: 300px; overflow-y: auto; }
-    .smart-row {
-      display: flex; align-items: center; gap: 10px; padding: 7px 4px;
-      border-bottom: 1px solid #141b33; font-size: 13px;
+    .about-logo img { width: 100%; height: 100%; border-radius: 50%; display: block; }
+    .about-name { font-size: 16px; font-weight: 600; }
+    .about-name span { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 4px; }
+    .about-desc {
+      margin: 10px auto 0; max-width: 400px;
+      color: var(--muted); font-size: 12.5px; line-height: 1.55;
     }
-    .smart-row:last-child { border-bottom: none; }
-    .smart-row .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .smart-row .nm small { color: var(--muted); }
-    .smart-row .track-act { opacity: 1; }
-    .chip-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-    .chip {
+    .about-note {
+      margin: 20px auto 0; max-width: 460px; padding: 12px 16px;
+      border-radius: 10px; background: var(--panel-2); border: 1px solid var(--border);
+      color: var(--muted); font-size: 12px; line-height: 1.55;
+    }
+    .about-note-title {
+      color: var(--text); font-size: 12.5px; font-weight: 700; letter-spacing: .06em;
+      text-align: center; margin-bottom: 6px;
+    }
+    .about-note p { margin: 0 0 6px; }
+    .about-note ul { margin: 0; padding-left: 18px; }
+    .about-note li + li { margin-top: 3px; }
+    .about-note b { color: var(--text); font-weight: 600; }
+    .about-links {
+      display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;
+      margin-top: auto; padding-top: 22px;
+      border-top: 1px solid #141b33;
+    }
+    .about-link {
       display: inline-flex; align-items: center; gap: 8px;
-      padding: 5px 6px 5px 12px; border-radius: 999px;
-      background: #182448; border: 1px solid #2a3d78; font-size: 12.5px; color: #dfe8ff;
+      padding: 9px 16px; border-radius: 9px;
+      font-size: 13px; font-weight: 600;
+      background: var(--panel-2); color: var(--text);
+      border: 1px solid var(--border);
+      transition: background .15s, border-color .15s;
     }
-    .chip button {
-      width: 18px; height: 18px; border-radius: 50%; background: #24356b; color: #9fb4e8;
-      font-size: 10px; line-height: 1; display: flex; align-items: center; justify-content: center; padding: 0;
-    }
-    .chip button:hover { background: #ff5c7a33; color: var(--danger); }
-    .smart-counter { margin: 10px 2px 0; color: var(--muted); font-size: 12px; }
-    .smart-note { margin-top: 8px; color: var(--muted); font-size: 12px; line-height: 1.45; }
-    .track-act.like.on { opacity: 1; color: #ff8fb0; }
-    .track-act.dislike.on { opacity: 1; color: #ff5c7a; }
-    .track.disliked .track-title, .track.disliked .track-artist { opacity: .5; }
+    .about-link svg { width: 15px; height: 15px; flex: none; }
+    .about-link.discord:hover { background: #5865f226; border-color: #5865f2; }
+    .about-link.github:hover { background: #8b949e1f; border-color: #8b949e; }
 
-    /* ---------- Главная страница (NK-Wave) ---------- */
+    /* ---------- Обратная связь ---------- */
+    .fb-stars { display: flex; gap: 2px; }
+    .fb-star {
+      background: none; border: 0; padding: 2px 3px;
+      font: inherit; font-size: 26px; line-height: 1;
+      color: #33406b; cursor: pointer;
+      transition: color .12s, transform .12s;
+    }
+    .fb-star:hover { transform: scale(1.15); }
+    .fb-star.on { color: #f5b83d; text-shadow: 0 0 12px #f5b83d55; }
+    .fb-field { padding: 14px 0 0; }
+    .fb-label { display: block; font-size: 13.5px; font-weight: 500; margin-bottom: 8px; }
+    .fb-textarea {
+      width: 100%; box-sizing: border-box; min-height: 150px; resize: vertical;
+      padding: 10px 12px; border-radius: 10px;
+      background: var(--panel-2); border: 1px solid var(--border);
+      color: var(--text); font: inherit; font-size: 13px; line-height: 1.5; outline: none;
+    }
+    .fb-textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px #2f7bff26; }
+    .fb-counter { margin-top: 6px; text-align: right; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+    .fb-actions { display: flex; align-items: center; gap: 14px; margin-top: 14px; }
+    .fb-status { font-size: 12.5px; color: var(--muted); }
+    .fb-status.err { color: #ed4245; }
+    .fb-status.ok { color: #57f287; }
+
+
+    /* ---------- Главная страница ---------- */
     #home-view {
       position: absolute; inset: 0; z-index: 2;
       display: flex; align-items: center; justify-content: center;
@@ -652,18 +709,116 @@
       transform: translateY(-2%);
       user-select: none;
     }
-    .home-cat { position: relative; width: min(46vh, 420px); flex: none; }
+
+    /* ---------- Фон сцены: туманности, винтящие диски, звёзды, искры ---------- */
+    .home-bg {
+      position: absolute; inset: -10vh -18vw;
+      z-index: 0; pointer-events: none;
+    }
+    .nebula { position: absolute; border-radius: 50%; }
+    .nebula-1 {
+      left: 5%; top: -6%; width: 78vh; height: 44vh;
+      background: radial-gradient(closest-side, rgba(47,123,255,.13), rgba(47,123,255,.05) 55%, transparent 76%);
+      animation: nebulaA 38s ease-in-out infinite alternate;
+    }
+    .nebula-2 {
+      right: 3%; bottom: 0; width: 68vh; height: 40vh;
+      background: radial-gradient(closest-side, rgba(123,92,255,.12), rgba(123,92,255,.045) 55%, transparent 76%);
+      animation: nebulaB 46s ease-in-out infinite alternate;
+    }
+    @keyframes nebulaA {
+      0% { transform: translate3d(0, 0, 0) scale(1); opacity: .6; }
+      100% { transform: translate3d(4vw, 3vh, 0) scale(1.09); opacity: .95; }
+    }
+    @keyframes nebulaB {
+      0% { transform: translate3d(0, 0, 0) scale(1.06); opacity: .5; }
+      100% { transform: translate3d(-5vw, -3vh, 0) scale(1); opacity: .9; }
+    }
+    /* Два встречных «энергетических» диска за котом: мягкое кольцо света,
+       вращающееся с разной скоростью — глубина без blur-фильтров */
+    .disc {
+      position: absolute; left: 50%; top: 46%;
+      width: 74vh; height: 74vh; margin: -37vh 0 0 -37vh;
+      border-radius: 50%;
+      -webkit-mask-image: radial-gradient(closest-side, transparent 0 30%, rgba(0,0,0,.9) 46%, transparent 68%);
+      mask-image: radial-gradient(closest-side, transparent 0 30%, rgba(0,0,0,.9) 46%, transparent 68%);
+    }
+    .disc-1 {
+      background: conic-gradient(from 0deg,
+        rgba(47,123,255,0) 0deg, rgba(47,123,255,.12) 34deg,
+        rgba(79,208,255,.05) 74deg, rgba(47,123,255,0) 132deg,
+        rgba(47,123,255,.09) 196deg, rgba(123,92,255,.07) 262deg,
+        rgba(47,123,255,0) 330deg, rgba(47,123,255,0) 360deg);
+      animation: discSpin 70s linear infinite;
+    }
+    .disc-2 {
+      top: 40%; width: 46vh; height: 46vh; margin: -23vh 0 0 -23vh;
+      background: conic-gradient(from 160deg,
+        rgba(123,92,255,0) 0deg, rgba(123,92,255,.10) 46deg,
+        rgba(79,208,255,.06) 110deg, rgba(123,92,255,0) 168deg,
+        rgba(123,92,255,0) 360deg);
+      animation: discSpin 52s linear infinite reverse;
+    }
+    @keyframes discSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    .floor-halo {
+      position: absolute; left: 50%; bottom: -4%;
+      width: 130%; height: 30%; margin-left: -65%;
+      background: radial-gradient(62% 100% at 50% 100%,
+        rgba(47,123,255,.16), rgba(123,92,255,.06) 46%, transparent 72%);
+      opacity: .75;
+    }
+    #home-stars, #home-ash { position: absolute; inset: 0; }
+    .home-star {
+      position: absolute; width: 2px; height: 2px; border-radius: 50%;
+      background: #dfeaff;
+      animation: starTwinkle var(--d, 4s) ease-in-out var(--dl, 0s) infinite alternate;
+    }
+    @keyframes starTwinkle {
+      from { opacity: .12; transform: scale(.7); }
+      to { opacity: .8; transform: scale(1.15); }
+    }
+    .home-ash {
+      position: absolute; bottom: -3%;
+      border-radius: 50%;
+      background: radial-gradient(circle at 35% 35%, rgba(198,238,255,.55), rgba(47,123,255,.18) 58%, transparent 74%);
+      animation: ashRise var(--d, 16s) linear var(--dl, 0s) infinite;
+      opacity: 0;
+    }
+    @keyframes ashRise {
+      0% { transform: translate3d(0, 0, 0) scale(1); opacity: 0; }
+      10% { opacity: var(--o, .5); }
+      80% { opacity: var(--o, .5); }
+      100% { transform: translate3d(var(--sx, 3vh), -112%, 0) scale(.55); opacity: 0; }
+    }
+    .scanlines {
+      position: absolute; inset: 0; z-index: 4;
+      pointer-events: none; opacity: .55;
+      background: repeating-linear-gradient(180deg,
+        rgba(143,190,255,0) 0px, rgba(143,190,255,0) 3px,
+        rgba(143,190,255,.03) 4px, rgba(143,190,255,0) 5px);
+      animation: scanShift 6s linear infinite;
+    }
+    @keyframes scanShift { from { transform: translateY(-5px); } to { transform: translateY(0); } }
+    .home-cat { position: relative; width: min(52vh, 480px); flex: none; }
     /* holo-tilt ОБЯЗАТЕЛЬНО relative: высоту сцене задаёт SVG в потоке;
        absolute-обёртка обнуляла высоту .home-cat, и канвас сплющивался в 377×0 */
     .holo-tilt { position: relative; }
     #home-cat-svg {
       width: 100%; height: auto; display: block;
-      animation: holoBreath 5.2s ease-in-out infinite;
-      transform-origin: 50% 78%;
+      /* Декор (гало/волны) шире viewBox — рисуем за его пределами,
+         иначе SVG жёстко режет эллипсы по границе 420×520 */
+      overflow: visible;
     }
-    @keyframes holoBreath {
-      0%, 100% { transform: scale(1); }
-      50% { transform: scale(1.016) translateY(-0.6%); }
+    /* Спектрограф подиума: canvas поверх SVG-сцены, но под котом (порядок в DOM).
+       Канвас шире бокса сцены на 80% — лучи на предельной длине не режутся.
+       height:100% обязателен: канвас — replace-элемент с внутренними
+       пропорциями (300×150), без явной высоты браузер растянет его не по
+       top/bottom, а по соотношению сторон — и кольцо уедет вверх.
+       Геометрия дуги в JS считается от ширины/высоты этого канваса */
+    #pod-spectrum {
+      position: absolute; top: 0; bottom: 0; height: 100%;
+      left: -40%; width: 180%;
+      pointer-events: none;
     }
     #home-cat-canvas {
       position: absolute; inset: 0; width: 100%; height: 100%;
@@ -672,8 +827,23 @@
     }
     .cat-aura { animation: homeAura 4.5s ease-in-out infinite alternate; }
     @keyframes homeAura { from { opacity: .55; } to { opacity: .95; } }
-    /*vector-кот гасится, когда загрузилась фото-маска (renderer переключит сэмплер)*/
-    #home-cat-vector { transition: opacity .5s ease; }
+    /* Голограмма — готовая картинка (assets/holo-cat.png) с уже прозрачным
+       фоном (чёрный конвертирован в альфу). Декор сцены остаётся под ней.
+       Векторный кот и canvas-движок частиц отключены */
+    #home-cat-vector, #home-cat-canvas { display: none; }
+    .holo-photo {
+      position: absolute; top: -3%; left: -6%;
+      width: 112%; height: 100%;
+      object-fit: contain; object-position: 50% 50%;
+      pointer-events: none; user-select: none;
+      /* linear: скорость постоянна, вдох сразу переходит в выдох без замирания */
+      animation: holoPhotoBreath 5.2s linear infinite;
+      transform-origin: 50% 70%;
+    }
+    @keyframes holoPhotoBreath {
+      0%, 100% { transform: scale(1); opacity: .94; }
+      50% { transform: scale(1.013) translateY(-.4%); opacity: 1; }
+    }
     .home-ray { animation: homeRay 6s ease-in-out infinite alternate; }
     @keyframes homeRay { from { opacity: .12; } to { opacity: .4; } }
     .home-dot { animation: homeDot 3.4s ease-in-out infinite alternate; }
@@ -685,32 +855,19 @@
       margin-top: -96px;
       display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px;
       color: #dcebff; cursor: pointer;
-      background: radial-gradient(circle at 50% 36%, #14294f66 0%, #060b1ccc 72%);
-      border: 2px solid #3f7dff;
-      box-shadow: 0 0 0 7px #2f7bff1a, 0 0 36px #2f7bff59, inset 0 0 26px #2f7bff33;
+      background: radial-gradient(circle at 50% 36%, #0e1d3a99 0%, #04081af0 72%);
+      border: 2px solid #2a55c4;
+      box-shadow: 0 0 0 7px #2f7bff14, 0 0 28px #2f7bff3d, inset 0 0 22px #2f7bff26;
       animation: homePulse 2.8s ease-in-out infinite;
       transition: transform .15s ease;
     }
-    .home-play:hover { transform: scale(1.04); border-color: #6da4ff; }
+    .home-play:hover { transform: scale(1.04); border-color: #4b7fe8; }
     .home-play:active { transform: scale(.98); }
     @keyframes homePulse {
-      0%, 100% { box-shadow: 0 0 0 7px #2f7bff1a, 0 0 30px #2f7bff4d, inset 0 0 24px #2f7bff30; }
-      50% { box-shadow: 0 0 0 10px #2f7bff2e, 0 0 52px #2f7bff7a, inset 0 0 30px #2f7bff44; }
+      0%, 100% { box-shadow: 0 0 0 7px #2f7bff14, 0 0 22px #2f7bff33, inset 0 0 20px #2f7bff22; }
+      50% { box-shadow: 0 0 0 10px #2f7bff24, 0 0 40px #2f7bff5c, inset 0 0 26px #2f7bff30; }
     }
     .home-play-icon { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; }
-    .home-play-label { font-size: 15px; font-weight: 600; letter-spacing: .02em; color: #cfd8ff; }
-    .home-settings {
-      position: relative; z-index: 3;
-      margin-top: 20px; height: 36px; padding: 0 18px;
-      border-radius: 999px; cursor: pointer;
-      display: inline-flex; align-items: center; gap: 8px;
-      background: linear-gradient(180deg, #101d3f, #0a1226);
-      border: 1px solid #2b3f77; color: #dbe6ff; font-size: 12.5px;
-      box-shadow: 0 0 18px #2f7bff2e;
-      transition: border-color .15s, box-shadow .15s;
-    }
-    .home-settings:hover { border-color: #3f7dff; box-shadow: 0 0 26px #2f7bff59; }
-    .home-settings svg { flex: none; opacity: .9; }
 
     /* ---------- Окно обновлений ---------- */
     #update-backdrop {
@@ -821,141 +978,180 @@
         </button>
       </div>
 
-      <div class="settings-scroll">
-        <div class="sec">Воспроизведение</div>
+      <div class="settings-body">
+        <nav class="settings-nav" aria-label="Группы настроек">
+          <button class="s-nav-item active" type="button" data-group="playback">Воспроизведение</button>
+          <button class="s-nav-item" type="button" data-group="spectrum">Спектрограф</button>
+          <button class="s-nav-item" type="button" data-group="service">Служебное</button>
+          <button class="s-nav-item" type="button" data-group="feedback">Обратная связь</button>
+          <button class="s-nav-item" type="button" data-group="about">О программе</button>
+        </nav>
 
-        <div class="s-row">
-          <div class="s-label"><b>Кроссфейд</b><small>Плавный переход между треками в очереди</small></div>
-          <input id="s-crossfade" class="s-range" type="range" min="0" max="12" step="0.5">
-          <span class="s-val" id="s-crossfade-v">Выкл</span>
-        </div>
+        <div class="settings-scroll">
+          <div class="s-group" data-group="playback">
+            <div class="sec">Воспроизведение</div>
 
-        <div class="s-row">
-          <div class="s-label"><b>Нормализация громкости</b><small>Подравнивает громкость между треками (по среднему уровню)</small></div>
-          <input id="s-normalize" class="s-toggle" type="checkbox">
-        </div>
+            <div class="s-row">
+              <div class="s-label"><b>Кроссфейд</b><small>Плавный переход между треками в очереди</small></div>
+              <input id="s-crossfade" class="s-range" type="range" min="0" max="12" step="0.5">
+              <span class="s-val" id="s-crossfade-v">Выкл</span>
+            </div>
 
-        <div class="s-row">
-          <div class="s-label"><b>Усиление баса</b><small>Подъём нижних частот</small></div>
-          <input id="s-bass" class="s-range" type="range" min="0" max="12" step="1">
-          <span class="s-val" id="s-bass-v">0 дБ</span>
-        </div>
+            <div class="s-row">
+              <div class="s-label"><b>Нормализация громкости</b><small>Подравнивает громкость между треками (по среднему уровню)</small></div>
+              <input id="s-normalize" class="s-toggle" type="checkbox">
+            </div>
 
-        <div class="s-row">
-          <div class="s-label"><b>Surround виртуализация</b><small>Расширяет стереобазу — эффект «объёмного» звука</small></div>
-          <input id="s-surround" class="s-toggle" type="checkbox">
-        </div>
+            <div class="s-row">
+              <div class="s-label"><b>Усиление баса</b><small>Подъём нижних частот</small></div>
+              <input id="s-bass" class="s-range" type="range" min="0" max="12" step="1">
+              <span class="s-val" id="s-bass-v">0 дБ</span>
+            </div>
 
-        <div class="s-row">
-          <div class="s-label"><b>Затухание при паузе</b><small>Короткий фейд вместо резкой остановки звука</small></div>
-          <input id="s-fade" class="s-toggle" type="checkbox">
-        </div>
+            <div class="s-row">
+              <div class="s-label"><b>Surround виртуализация</b><small>Расширяет стереобазу — эффект «объёмного» звука</small></div>
+              <input id="s-surround" class="s-toggle" type="checkbox">
+            </div>
 
-        <div class="sec">Служебное</div>
+            <div class="s-row">
+              <div class="s-label"><b>Затухание при паузе</b><small>Короткий фейд вместо резкой остановки звука</small></div>
+              <input id="s-fade" class="s-toggle" type="checkbox">
+            </div>
+          </div>
 
-        <div class="s-row">
-          <div class="s-label"><b>Размер кэша треков</b><small id="s-cache-used">Занято: —</small></div>
-          <input id="s-cache" class="s-range" type="range" min="50" max="5120" step="50">
-          <span class="s-val" id="s-cache-v">2 ГБ</span>
-        </div>
+          <div class="s-group hidden" data-group="spectrum">
+            <div class="sec">Спектрограф</div>
 
-        <div class="s-row">
-          <div class="s-label"><b>Очистить кэш</b><small>Удалит все скачанные треки с диска</small></div>
-          <button id="s-cache-clear" class="btn-ghost">Очистить</button>
-        </div>
+            <div class="s-row">
+              <div class="s-label"><b>Толщина лучей</b><small>Жирность свечения в лучах спектра</small></div>
+              <input id="s-spec-thick" class="s-range" type="range" min="0.5" max="2.5" step="0.05">
+              <span class="s-val" id="s-spec-thick-v">100%</span>
+            </div>
 
-        <div class="s-row">
-          <div class="s-label"><b>Обновления</b><small id="s-update-state">Проверяется и при каждом запуске</small></div>
-          <button id="s-update" class="btn-ghost">Проверить</button>
-        </div>
+            <div class="s-row">
+              <div class="s-label"><b>Длина лучей</b><small>Как далеко лучи выходят за кольцо</small></div>
+              <input id="s-spec-len" class="s-range" type="range" min="0.5" max="2" step="0.05">
+              <span class="s-val" id="s-spec-len-v">100%</span>
+            </div>
 
-        <div class="s-row">
-          <div class="s-label"><b>Сброс настроек</b><small>Вернуть все значения по умолчанию</small></div>
-          <button id="s-reset" class="btn-ghost danger">Сбросить</button>
+            <div class="s-row">
+              <div class="s-label"><b>Количество лучей</b><small>Лучей по окружности кольца</small></div>
+              <input id="s-spec-rays" class="s-range" type="range" min="24" max="96" step="2">
+              <span class="s-val" id="s-spec-rays-v">52</span>
+            </div>
+
+            <div class="s-row">
+              <div class="s-label"><b>Плотность точек</b><small>Точек в каждом луче</small></div>
+              <input id="s-spec-dots" class="s-range" type="range" min="0.5" max="2" step="0.05">
+              <span class="s-val" id="s-spec-dots-v">100%</span>
+            </div>
+
+            <div class="s-row">
+              <div class="s-label"><b>Интенсивность баса</b><small>Сила реакции боковых — басовых — лучей</small></div>
+              <input id="s-spec-intb" class="s-range" type="range" min="0.5" max="2" step="0.05">
+              <span class="s-val" id="s-spec-intb-v">100%</span>
+            </div>
+
+            <div class="s-row">
+              <div class="s-label"><b>Интенсивность середины</b><small>Сила реакции лучей в середине спектра</small></div>
+              <input id="s-spec-intm" class="s-range" type="range" min="0.5" max="2" step="0.05">
+              <span class="s-val" id="s-spec-intm-v">100%</span>
+            </div>
+
+            <div class="s-row">
+              <div class="s-label"><b>Интенсивность верхов</b><small>Сила реакции лучей на высоких частотах</small></div>
+              <input id="s-spec-inth" class="s-range" type="range" min="0.5" max="2" step="0.05">
+              <span class="s-val" id="s-spec-inth-v">100%</span>
+            </div>
+
+            <div class="s-row">
+              <div class="s-label"><b>Спектрограф включён</b><small>Показывать кольцо и лучи частот на подиуме</small></div>
+              <input id="s-spec-enabled" class="s-toggle" type="checkbox">
+            </div>
+          </div>
+
+          <div class="s-group hidden" data-group="service">
+            <div class="sec">Служебное</div>
+
+            <div class="s-row">
+              <div class="s-label"><b>Размер кэша треков</b><small id="s-cache-used">Занято: —</small></div>
+              <input id="s-cache" class="s-range" type="range" min="50" max="5120" step="50">
+              <span class="s-val" id="s-cache-v">2 ГБ</span>
+            </div>
+
+            <div class="s-row">
+              <div class="s-label"><b>Очистить кэш</b><small id="s-cache-net">Удалит скачанные треки и сетевой кэш</small></div>
+              <button id="s-cache-clear" class="btn-ghost">Очистить</button>
+            </div>
+
+            <div class="s-row">
+              <div class="s-label"><b>Обновления</b><small id="s-update-state">Проверяется и при каждом запуске</small></div>
+              <button id="s-update" class="btn-ghost">Проверить</button>
+            </div>
+
+            <div class="s-row">
+              <div class="s-label"><b>Сброс настроек</b><small>Вернуть все значения по умолчанию</small></div>
+              <button id="s-reset" class="btn-ghost danger">Сбросить</button>
+            </div>
+          </div>
+
+          <div class="s-group hidden" data-group="feedback">
+            <div class="sec">Обратная связь</div>
+
+            <div class="s-row">
+              <div class="s-label"><b>Оценка плеера</b><small>Поставьте от 1 до 5 звёзд</small></div>
+              <div class="fb-stars" id="fb-stars" role="radiogroup" aria-label="Оценка от 1 до 5"></div>
+            </div>
+
+            <div class="fb-field">
+              <label class="fb-label" for="fb-comment">Поле для отзыва и предложений</label>
+              <textarea id="fb-comment" class="fb-textarea" maxlength="1200" rows="7"
+                placeholder="Что нравится, что сломалось, чего не хватает — всё пригодится"></textarea>
+              <div class="fb-counter"><span id="fb-count">0</span> / 1200</div>
+            </div>
+
+            <div class="fb-actions">
+              <button id="fb-send" class="btn">Отправить</button>
+              <span id="fb-status" class="fb-status"></span>
+            </div>
+          </div>
+
+          <div class="s-group hidden" data-group="about">
+            <div class="about-hero">
+              <div class="about-logo"><img src="assets/icon.png" alt="Логотип NK Player"></div>
+              <div class="about-name">NK Player<span id="about-version"></span></div>
+              <p class="about-desc">
+                Десктопный плеер для музыки ВКонтакте. Ваша библиотека, плейлисты и свои файлы
+                в одном окне — с эквалайзером, эффектами звука, спектрографом и статусом в Discord.
+              </p>
+            </div>
+            <div class="about-note">
+              <div class="about-note-title">ВНИМАНИЕ!</div>
+              <p>Плеер только читает данные ВК: треки, плейлисты и поиск подтягиваются оттуда,
+                но изменения из плеера в ВК не отправляются и хранятся на этом компьютере.</p>
+              <ul>
+                <li><b>Свои плейлисты</b> — создание, переименование, удаление, добавление и удаление треков.
+                  В ВК они не появятся.</li>
+                <li><b>Загруженная музыка</b> — файлы копируются в профиль плеера и в ВК не загружаются.</li>
+                <li><b>Очередь, эквалайзер и настройки</b> — сохраняются только в плеере.</li>
+              </ul>
+            </div>
+            <div class="about-links">
+              <button id="about-discord" class="about-link discord" type="button" title="Сервер проекта в Discord">
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M20.32 4.37A19.8 19.8 0 0 0 15.4 2.85a.07.07 0 0 0-.08.04c-.21.38-.45.87-.61 1.26a18.3 18.3 0 0 0-5.49 0 12.6 12.6 0 0 0-.62-1.26.08.08 0 0 0-.08-.04 19.7 19.7 0 0 0-4.88 1.52.07.07 0 0 0-.03.03C.53 9.05-.32 13.58.1 18.06a.08.08 0 0 0 .03.06 19.9 19.9 0 0 0 5.99 3.03.08.08 0 0 0 .08-.03c.46-.63.87-1.3 1.22-1.99a.08.08 0 0 0-.04-.11 13.1 13.1 0 0 1-1.87-.89.08.08 0 0 1-.01-.13l.37-.29a.07.07 0 0 1 .08-.01c3.93 1.79 8.18 1.79 12.07 0a.07.07 0 0 1 .08.01l.37.29a.08.08 0 0 1-.01.13c-.6.35-1.22.64-1.87.89a.08.08 0 0 0-.04.11c.36.7.77 1.36 1.22 1.99a.08.08 0 0 0 .08.03 19.8 19.8 0 0 0 6-3.03.08.08 0 0 0 .03-.05c.5-5.18-.84-9.67-3.55-13.66a.06.06 0 0 0-.03-.03ZM8.02 15.33c-1.18 0-2.16-1.09-2.16-2.42s.96-2.42 2.16-2.42c1.21 0 2.18 1.1 2.16 2.42 0 1.33-.96 2.42-2.16 2.42Zm7.97 0c-1.18 0-2.16-1.09-2.16-2.42s.96-2.42 2.16-2.42c1.21 0 2.18 1.1 2.16 2.42 0 1.33-.95 2.42-2.16 2.42Z"/></svg>
+                Discord
+              </button>
+              <button id="about-github" class="about-link github" type="button" title="Исходный код на GitHub">
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .3a12 12 0 0 0-3.8 23.38c.6.12.83-.26.83-.57L9 21.07c-3.34.72-4.04-1.61-4.04-1.61-.55-1.39-1.33-1.76-1.33-1.76-1.09-.74.08-.73.08-.73 1.2.09 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.5 1 .1-.78.42-1.31.76-1.61-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.14-.3-.54-1.52.1-3.18 0 0 1-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.28-1.55 3.29-1.23 3.29-1.23.64 1.66.24 2.88.12 3.18a4.65 4.65 0 0 1 1.23 3.22c0 4.61-2.8 5.63-5.48 5.92.42.36.81 1.1.81 2.22l-.01 3.29c0 .31.2.69.82.57A12 12 0 0 0 12 .3Z"/></svg>
+                GitHub
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
       <div class="settings-foot">
         <button id="settings-done" class="btn">Готово</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Умный режим: настройки (кнопка под NK-Wave) -->
-  <div id="smart-backdrop" class="hidden">
-    <div class="settings" role="dialog" aria-modal="true">
-      <div class="settings-head">
-        <h3>Умный режим NK-Wave</h3>
-        <button id="smart-close" class="tb-btn" title="Закрыть" aria-label="Закрыть">
-          <svg width="10" height="10" viewBox="0 0 10 10"><path d="M0.5 0.5l9 9M9.5 0.5l-9 9" stroke="currentColor" stroke-width="1.2"/></svg>
-        </button>
-      </div>
-
-      <div class="smart-tabs">
-        <button class="smart-tab on" data-tab="artists">Артисты</button>
-        <button class="smart-tab" data-tab="tracks">Треки</button>
-        <button class="smart-tab" data-tab="dislikes">Непонравилось</button>
-        <button class="smart-tab" data-tab="knobs">Подбор</button>
-      </div>
-
-      <div class="settings-scroll">
-        <div class="smart-pane on" id="smart-pane-artists">
-          <div class="smart-note">Любимые артисты — зерно умного режима. Для начала хватит трёх-пяти; отмечать можно и кнопкой ♥ в списках.</div>
-          <input id="smart-artists-search" class="smart-search" type="text" placeholder="Поиск по своей библиотеке…">
-          <div class="chip-list" id="smart-artists-chips"></div>
-          <div class="smart-counter" id="smart-artists-count"></div>
-          <div class="smart-list" id="smart-artists-list"></div>
-        </div>
-
-        <div class="smart-pane" id="smart-pane-tracks">
-          <div class="smart-note">Любимые треки получают высший приоритет в умном режиме. Добавляйте поиском здесь или кнопкой ♥ у трека.</div>
-          <input id="smart-tracks-search" class="smart-search" type="text" placeholder="Поиск по названию или исполнителю…">
-          <div class="smart-counter" id="smart-tracks-count"></div>
-          <div class="smart-list" id="smart-tracks-list"></div>
-        </div>
-
-        <div class="smart-pane" id="smart-pane-dislikes">
-          <div class="smart-note">Дизлайкнутые треки никогда не играют в умном режиме. «Вернуть» — трек снова в ротации с нейтральным приоритетом.</div>
-          <div class="sec">Исключённые треки</div>
-          <div class="smart-list" id="smart-dislikes-list"></div>
-          <div class="sec">Исключённые артисты</div>
-          <div class="chip-list" id="smart-hidden-chips"></div>
-          <div class="smart-note">Исключение артиста касается только умного режима — в списках библиотеки его треки остаются.</div>
-        </div>
-
-        <div class="smart-pane" id="smart-pane-knobs">
-          <div class="s-row">
-            <div class="s-label"><b>Новое ↔ Знакомое</b><small>Доля неигранных треков в очереди умного режима</small></div>
-            <input id="s-explore" class="s-range" type="range" min="0" max="40" step="5">
-            <span class="s-val" id="s-explore-v">20%</span>
-          </div>
-          <div class="s-row">
-            <div class="s-label"><b>Один артист подряд</b><small>Сколько треков одного исполнителя может идти друг за другом</small></div>
-            <input id="s-cap" class="s-range" type="range" min="1" max="4" step="1">
-            <span class="s-val" id="s-cap-v">2</span>
-          </div>
-          <div class="s-row">
-            <div class="s-label"><b>Не надоедать</b><small>Перерыв перед повторным треком исполнителя</small></div>
-            <input id="s-cooldown" class="s-range" type="range" min="0" max="3" step="1">
-            <span class="s-val" id="s-cooldown-v">15 мин</span>
-          </div>
-          <div class="s-row">
-            <div class="s-label"><b>Реагировать на время суток</b><small>Артисты, которых вы обычно слушаете в это время, — чуть выше</small></div>
-            <input id="s-tod" class="s-toggle" type="checkbox">
-          </div>
-          <div class="s-row">
-            <div class="s-label"><b>Скрывать дизлайки в списках</b><small>Иначе они остаются в списках приглушёнными</small></div>
-            <input id="s-hide-disliked" class="s-toggle" type="checkbox">
-          </div>
-          <div class="s-row">
-            <div class="s-label"><b>Статистика прослушиваний</b><small id="smart-stats-info">—</small></div>
-            <button id="smart-stats-reset" class="btn-ghost danger">Сбросить</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="settings-foot">
-        <button id="smart-done" class="btn">Готово</button>
       </div>
     </div>
   </div>
@@ -1042,7 +1238,7 @@
       <nav class="nav" aria-label="Разделы">
         <button class="nav-item" id="nav-home" data-view="home">
           <span class="nav-icon" aria-hidden="true">⌂</span>
-          <span class="nav-text"><span class="nav-label">Главная</span><span class="nav-sub">NK-Wave</span></span>
+          <span class="nav-text"><span class="nav-label">Главная</span></span>
         </button>
         <button class="nav-item active" id="nav-my" data-view="my">
           <span class="nav-icon" aria-hidden="true">♫</span>
@@ -1103,9 +1299,18 @@
         </div>
       </header>
 
-      <!-- Главная: NK-Wave -->
+      <!-- Главная страница -->
       <section id="home-view" class="hidden" aria-label="Главная страница">
         <div class="home-stage">
+          <div class="home-bg" aria-hidden="true">
+            <div class="nebula nebula-1"></div>
+            <div class="nebula nebula-2"></div>
+            <div class="disc disc-1"></div>
+            <div class="disc disc-2"></div>
+            <div class="floor-halo"></div>
+            <div id="home-stars"></div>
+            <div id="home-ash"></div>
+          </div>
           <div class="home-cat">
             <div class="holo-tilt" id="holo-tilt">
             <svg id="home-cat-svg" viewBox="0 0 420 520" role="img" aria-hidden="true">
@@ -1125,6 +1330,40 @@
                   <stop offset="50%" stop-color="#4fd0ff" stop-opacity=".45"/>
                   <stop offset="100%" stop-color="#4fd0ff" stop-opacity="0"/>
                 </linearGradient>
+                <linearGradient id="hg-wall" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#4fd0ff" stop-opacity=".22"/>
+                  <stop offset="55%" stop-color="#1e5fd8" stop-opacity=".14"/>
+                  <stop offset="100%" stop-color="#0b1a3d" stop-opacity=".55"/>
+                </linearGradient>
+                <linearGradient id="hg-rim" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#9fd8ff" stop-opacity=".85"/>
+                  <stop offset="100%" stop-color="#2f7bff" stop-opacity=".25"/>
+                </linearGradient>
+                <radialGradient id="hg-glass" cx="50%" cy="42%" r="72%">
+                  <stop offset="0%" stop-color="#79b8ff" stop-opacity=".18"/>
+                  <stop offset="70%" stop-color="#1e5fd8" stop-opacity=".1"/>
+                  <stop offset="100%" stop-color="#1e5fd8" stop-opacity=".02"/>
+                </radialGradient>
+                <radialGradient id="hg-core" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stop-color="#eaf7ff" stop-opacity=".8"/>
+                  <stop offset="45%" stop-color="#4fd0ff" stop-opacity=".45"/>
+                  <stop offset="100%" stop-color="#4fd0ff" stop-opacity="0"/>
+                </radialGradient>
+                <radialGradient id="pg-halo" cx="50%" cy="50%" r="50%">
+                  <stop offset="0%" stop-color="#2f7bff" stop-opacity=".22"/>
+                  <stop offset="45%" stop-color="#2f7bff" stop-opacity=".1"/>
+                  <stop offset="65%" stop-color="#7b5cff" stop-opacity=".07"/>
+                  <stop offset="100%" stop-color="#7b5cff" stop-opacity="0"/>
+                </radialGradient>
+                <radialGradient id="pg-face" cx="50%" cy="40%" r="70%">
+                  <stop offset="0%" stop-color="#d2ecff" stop-opacity=".28"/>
+                  <stop offset="55%" stop-color="#2f7bff" stop-opacity=".14"/>
+                  <stop offset="100%" stop-color="#1e5fd8" stop-opacity=".04"/>
+                </radialGradient>
+                <linearGradient id="pg-rim" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#bfe9ff" stop-opacity=".95"/>
+                  <stop offset="100%" stop-color="#6fb4ff" stop-opacity=".3"/>
+                </linearGradient>
                 <filter id="hf-aura" x="-60%" y="-60%" width="220%" height="220%">
                   <feGaussianBlur stdDeviation="16"/>
                 </filter>
@@ -1133,11 +1372,12 @@
                 </filter>
               </defs>
 
-              <!-- Пол-подиум -->
-              <ellipse cx="210" cy="468" rx="196" ry="40" fill="url(#hg-aura)" opacity=".5"/>
-              <ellipse cx="210" cy="468" rx="150" ry="30" fill="none" stroke="#4fd0ff" stroke-opacity=".4" stroke-dasharray="3 7"/>
-              <ellipse cx="210" cy="468" rx="228" ry="52" fill="none" stroke="#4fd0ff" stroke-opacity=".18"/>
-              <path d="M52 452 Q210 398 368 452" fill="none" stroke="#4fd0ff" stroke-opacity=".25" stroke-dasharray="2 8"/>
+              <!-- Подиум: светящаяся платформа; спектр частот рисует canvas #pod-spectrum -->
+              <ellipse cx="210" cy="462" rx="286" ry="58" fill="url(#pg-halo)"/>
+              <ellipse cx="210" cy="458" rx="192" ry="30" fill="none" stroke="#7fd2ff" stroke-opacity=".35" stroke-width="1.2"/>
+              <ellipse cx="210" cy="456" rx="156" ry="23" fill="url(#pg-face)"/>
+              <ellipse cx="210" cy="456" rx="156" ry="23" fill="none" stroke="url(#pg-rim)" stroke-width="2" stroke-opacity=".95"/>
+              <ellipse cx="210" cy="456" rx="86" ry="10" fill="url(#hg-core)"/>
 
               <!-- Световые линии -->
               <g>
@@ -1148,20 +1388,7 @@
                 <line class="home-ray" x1="210" y1="14" x2="210" y2="66" stroke="url(#hg-ray)" stroke-width="2" style="animation-delay:-.4s"/>
               </g>
 
-              <!-- Голографические кольца -->
-              <g stroke="#4fd0ff" fill="none" opacity=".9">
-                <ellipse cx="210" cy="306" rx="128" ry="30" stroke-opacity=".28" stroke-dasharray="5 9">
-                  <animateTransform attributeName="transform" type="rotate" values="-5 210 306;5 210 306;-5 210 306" dur="14s" repeatCount="indefinite"/>
-                </ellipse>
-                <ellipse cx="210" cy="352" rx="162" ry="38" stroke-opacity=".36" stroke-dasharray="2 6">
-                  <animateTransform attributeName="transform" type="rotate" values="4 210 352;-4 210 352;4 210 352" dur="17s" repeatCount="indefinite"/>
-                </ellipse>
-                <ellipse cx="210" cy="404" rx="192" ry="46" stroke-opacity=".22" stroke-dasharray="8 10">
-                  <animateTransform attributeName="transform" type="rotate" values="-3 210 404;3 210 404;-3 210 404" dur="21s" repeatCount="indefinite"/>
-                </ellipse>
-                <ellipse cx="210" cy="452" rx="212" ry="34" stroke-opacity=".5" stroke-dasharray="1 5"/>
-                <ellipse cx="210" cy="452" rx="236" ry="44" stroke-opacity=".2"/>
-              </g>
+              <!-- Кольца вокруг корпуса убраны по просьбе пользователя -->
 
               <!-- Свечение за котом (без filter — на части GPU редает слой целиком) -->
               <ellipse cx="210" cy="252" rx="122" ry="158" fill="url(#hg-aura)" opacity=".62"/>
@@ -1224,6 +1451,8 @@
               </g>
             </svg>
             <canvas id="home-cat-canvas"></canvas>
+            <canvas id="pod-spectrum" aria-hidden="true"></canvas>
+            <img id="home-cat-photo" class="holo-photo" src="assets/holo-cat.png" alt="" draggable="false">
             </div>
           </div>
 
@@ -1232,18 +1461,10 @@
               <svg id="home-play-ico-play" width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l12-7z"/></svg>
               <svg id="home-play-ico-pause" class="hidden" width="26" height="26" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>
             </span>
-            <span class="home-play-label">NK-Wave</span>
-          </button>
-
-          <button id="home-settings" class="home-settings">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="3.2"/>
-              <path d="M12 2.6v3.2M12 18.2v3.2M2.6 12h3.2M18.2 12h3.2M5.7 5.7l2.3 2.3M16 16l2.3 2.3M18.3 5.7L16 8M8 16l-2.3 2.3"/>
-            </svg>
-            Настройки
           </button>
 
         </div>
+        <div class="scanlines" aria-hidden="true"></div>
       </section>
 
       <div class="list-head" aria-hidden="true">

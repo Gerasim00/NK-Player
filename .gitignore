@@ -16,3 +16,6 @@ builder-debug.yml
 builder-effective-config.yaml
 msedge_*.png
 02ea7abb-*.png
+
+# Ключ отзывов (webhook): только в сборке, в репозиторий не попадает
+feedback.key

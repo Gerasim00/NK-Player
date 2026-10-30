@@ -61,7 +61,7 @@ const state = {
   repeat: 'off',              // off | all | one
   playToken: 0,
   retried: false,
-  smart: false                // идёт ли очередь, собранная умным режимом
+  resumeSeek: 0              // позиция внутри трека, восстановленная с прошлой сессии
 };
 
 let hls = null;
@@ -76,9 +76,24 @@ async function vkCall(channel, ...args) {
   return res.data;
 }
 
+// Индекс обложек: ВК отдаёт обложки не для всех списков (в плейлистах и поиске
+// поле часто пустое). Всё, что увидели с обложкой — обычно из «Моей музыки» —
+// запоминаем по паре «исполнитель + название» и подтягиваем остальным.
+state.coverIndex = new Map();
+
+function coverKey(t) {
+  // Артиста укорачиваем так же, как в sameArtist: «X feat. Y» и «X» — одно лицо
+  const cut = (s) => s.split(' feat')[0].split(' ft ')[0].split(' & ')[0].split(',')[0].trim();
+  return `${cut(normalizeArtist(t.artist))}\u0000${normalizeArtist(t.title)}`;
+}
+
 function stampTracks(tracks) {
   const now = Date.now();
   tracks.forEach((t) => { if (t.url) t.urlTime = now; });
+  // Сначала пополняем индекс всей пачкой, потом заполняем пустые обложки —
+  // так дубликаты внутри одной пачки тоже перекрывают друг друга
+  for (const t of tracks) if (t.cover) state.coverIndex.set(coverKey(t), t.cover);
+  for (const t of tracks) if (!t.cover) t.cover = state.coverIndex.get(coverKey(t)) || '';
   return tracks;
 }
 
@@ -143,11 +158,25 @@ function storeUpcoming(pos) {
   for (let p = pos + 1; p < state.order.length && Object.keys(wanted).length < 3; p++) {
     add(state.queue[state.order[p]]);
   }
+  pinCache(pos);
   for (const [id, url] of Object.entries(wanted)) {
     vkCall('audio:cacheStore', { id, url })
       .then((out) => { if (out && out.url) localHits.set(id, out.url); })
       .catch(() => {});
   }
+}
+
+// Текущий трек и следующие не даём вытеснить: иначе при полном кэше чистка
+// могла снести файл, который сейчас играет, или тот, к которому идёт переход.
+function pinCache(pos) {
+  const ids = [];
+  const cur = state.queue[state.order[pos]];
+  if (cur && !cur.local) ids.push(cur.id);
+  for (let p = pos + 1; p < state.order.length && ids.length < 4; p++) {
+    const t = state.queue[state.order[p]];
+    if (t && !t.local) ids.push(t.id);
+  }
+  ipcRenderer.invoke('cache:pin', { ids }).catch(() => {});
 }
 
 // Прогрев самозалитов: ВК собирает HLS из залитого файла по первому запросу
@@ -276,12 +305,97 @@ termsToggle.addEventListener('click', () => {
 
 let updateChecked = false;
 
+// Ссылки в разделе «О программе». Пустая строка просто прячет кнопку.
+const ABOUT_LINKS = {
+  github: 'https://github.com/Gerasim00/NK-Player',
+  discord: 'https://discord.gg/BhhtUum3R2',
+};
+
 async function showVersion() {
   try {
     const res = await ipcRenderer.invoke('app:version');
     const ver = res && res.success ? res.data : '';
     $('app-version').textContent = ver ? 'v' + ver : '';
+    const aboutVer = $('about-version');
+    if (aboutVer) aboutVer.textContent = ver ? 'v' + ver : '';
   } catch (e) {}
+}
+
+// Кнопка-ссылка: если адреса нет — не показываем её вовсе
+function bindAboutLinks() {
+  const map = { 'about-discord': ABOUT_LINKS.discord, 'about-github': ABOUT_LINKS.github };
+  for (const [id, url] of Object.entries(map)) {
+    const btn = $(id);
+    if (!btn) continue;
+    if (!url) { btn.classList.add('hidden'); continue; }
+    btn.addEventListener('click', () => ipcRenderer.invoke('app:openExternal', url));
+  }
+}
+
+// ---------------------------------------------------------------- Обратная связь
+
+// Оценка живёт в памяти вкладки: отправили — форма чистится, помнить нечего.
+let fbRating = 0;
+
+function bindFeedbackUI() {
+  const wrap = $('fb-stars');
+  const stars = [];
+  for (let i = 1; i <= 5; i++) {
+    const s = document.createElement('button');
+    s.type = 'button';
+    s.className = 'fb-star';
+    s.textContent = '★';
+    s.dataset.value = String(i);
+    s.setAttribute('aria-label', `Оценка ${i} из 5`);
+    s.addEventListener('click', () => { fbRating = i; paintStars(); });
+    wrap.appendChild(s);
+    stars.push(s);
+  }
+  function paintStars() {
+    for (const s of stars) s.classList.toggle('on', Number(s.dataset.value) <= fbRating);
+  }
+
+  const ta = $('fb-comment');
+  ta.addEventListener('input', () => {
+    if (ta.value.length > 1200) ta.value = ta.value.slice(0, 1200);
+    $('fb-count').textContent = String(ta.value.length);
+  });
+
+  $('fb-send').addEventListener('click', sendFeedback);
+}
+
+function showFbStatus(text, kind) {
+  const el = $('fb-status');
+  el.textContent = text;
+  el.classList.toggle('err', kind === 'err');
+  el.classList.toggle('ok', kind === 'ok');
+  clearTimeout(showFbStatus._t);
+  showFbStatus._t = setTimeout(() => { el.textContent = ''; el.classList.remove('err', 'ok'); }, 5000);
+}
+
+async function sendFeedback() {
+  const btn = $('fb-send');
+  const comment = $('fb-comment').value.trim();
+
+  if (!fbRating) { showFbStatus('Поставьте оценку от 1 до 5 звёзд', 'err'); return; }
+  if (!comment) { showFbStatus('Напишите пару слов в поле для отзыва', 'err'); return; }
+
+  btn.disabled = true;
+  showFbStatus('Отправляем…', '');
+  try {
+    const res = await ipcRenderer.invoke('feedback:send', { rating: fbRating, comment });
+    if (!res || !res.ok) throw new Error((res && res.error) || 'ошибка отправки');
+    // Успех: чистим форму
+    fbRating = 0;
+    for (const s of $('fb-stars').querySelectorAll('.fb-star')) s.classList.remove('on');
+    $('fb-comment').value = '';
+    $('fb-count').textContent = '0';
+    showFbStatus('Отправлено ✔ Спасибо за отзыв!', 'ok');
+  } catch (err) {
+    showFbStatus('Не удалось отправить: ' + err.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // Тег релиза у нас называется NK-Player-1.5.0 — в интерфейсе оставляем только номер
@@ -394,11 +508,16 @@ $('btn-cancel-qr').addEventListener('click', async () => {
 $('btn-logout').addEventListener('click', async () => {
   await ipcRenderer.invoke('auth:logout');
   stopPlayback();
+  try {
+    localStorage.removeItem(PLAYBACK_KEY);
+    localStorage.removeItem(PLAYBACK_SEEK_KEY);
+  } catch (e) { /* ок */ }
   Object.assign(state, {
     profile: null,
     myTracks: null, playlists: [], playlistTracks: new Map(), search: null,
     localPlaylists: [], localPlaylistTracks: new Map(),
-    view: { type: 'my' }, displayed: [], queue: [], order: [], pos: -1, current: null
+    view: { type: 'my' }, displayed: [], queue: [], order: [], pos: -1, current: null,
+    resumeSeek: 0
   });
   playlistNav.textContent = '';
   updateNowPlaying();
@@ -418,6 +537,8 @@ function showApp() {
   loadAccount();
   updateLocalCount();
   loadLocalTracks().catch(() => {});
+  restorePlayback();
+  initHomeBgFx();
   openView({ type: 'home' });
   loadPlaylists();
 }
@@ -487,22 +608,9 @@ async function loadPlaylistTracks(pl) {
   if (!state.playlistTracks.has(key)) {
     const tracks = stampTracks(await vkCall('playlist:tracks', pl));
 
-    // ВК почти не отдаёт обложки для треков внутри плейлистов. Сначала ищем
-    // их в «Моей музыке» по исполнителю и названию, остальным ставим обложку
-    // самого плейлиста — так же делает и веб-версия ВК.
-    const known = state.myTracks;
-    let byName = null;
-    if (known && known.length) {
-      byName = new Map();
-      for (const t of known) {
-        if (t.cover) byName.set(`${t.artist}\u0000${t.title}`, t.cover);
-      }
-    }
-    for (const t of tracks) {
-      if (!t.cover && byName) t.cover = byName.get(`${t.artist}\u0000${t.title}`) || '';
-    }
-
-    // У части плейлистов ВК не даёт обложку вообще — берём её у первого трека
+    // Пустые обложки уже заполнены из индекса в stampTracks (ВК почти не
+    // отдаёт обложки для треков внутри плейлистов). Остальным без обложки
+    // ставим обложку самого плейлиста — так же делает и веб-версия ВК.
     if (!pl.cover) {
       const first = tracks.find((t) => t.cover);
       if (first) {
@@ -525,15 +633,8 @@ async function loadPlaylistTracks(pl) {
 async function loadLocalPlaylistTracks(id) {
   if (!state.localPlaylistTracks.has(id)) {
     const tracks = stampTracks(await vkCall('lib:tracks', id));
-    // ВК не отдаёт обложки внутри маленьких плейлистов — подтянем из «Моей музыки»
-    const known = state.myTracks;
-    if (known && known.length) {
-      const byName = new Map();
-      for (const t of known) if (t.cover) byName.set(`${t.artist}\u0000${t.title}`, t.cover);
-      for (const t of tracks) {
-        if (!t.cover) t.cover = byName.get(`${t.artist}\u0000${t.title}`) || '';
-      }
-    }
+    // Пустые обложки уже заполнены из индекса в stampTracks — ВК не отдаёт
+    // обложки внутри маленьких плейлистов, подтягиваем из «Моей музыки»
     state.localPlaylistTracks.set(id, tracks);
   }
   // Копия: renderTracks и очередь не должны менять закэшированный массив
@@ -725,8 +826,8 @@ async function openView(view) {
   document.querySelector('.main-header').classList.toggle('hidden', homeMode);
   document.querySelector('.list-head').classList.toggle('hidden', homeMode);
   tracksContainer.classList.toggle('hidden', homeMode);
-  // Тяжёлый цикл голограммы живёт только пока открыта главная
-  if (homeMode) startHoloCat(); else stopHoloCat();
+  // Голограмма кота — статичная картинка: тяжёлый canvas-движок не запускаем
+  if (!homeMode) stopHoloCat();
   $('btn-import').classList.toggle('hidden', view.type !== 'local');
   // Свой плейлист можно очистить только из его же экрана — кнопка видна там
   $('btn-del-playlist').classList.toggle('hidden', view.type !== 'local-playlist');
@@ -869,7 +970,7 @@ $('nav-search').addEventListener('click', () => {
 $('nav-queue').addEventListener('click', () => openView({ type: 'queue' }));
 $('nav-home').addEventListener('click', () => openView({ type: 'home' }));
 
-// ---------------------------------------------------------------- Живая голограмма кота (NK-Wave)
+// ---------------------------------------------------------------- Живая голограмма кота
 
 // Силуэт читаем из разметки (#home-cat-body) и превращаем в поле светящихся
 // частиц на canvas: они всплывают внутри тела, мерцают, ярче «искрят» на краях,
@@ -1251,24 +1352,318 @@ function stopHoloCat() {
   HOLO.tilt.tx = 0; HOLO.tilt.ty = 0;
 }
 
-// Параллакс: слушаем сцену целиком, амплитуды малые — эффект вглубь
-$('home-view').addEventListener('pointermove', (e) => {
-  if (!HOLO.running) return;
-  const r = $('home-view').getBoundingClientRect();
-  const nx = (e.clientX - r.left) / Math.max(1, r.width) - 0.5;
-  const ny = (e.clientY - r.top) / Math.max(1, r.height) - 0.5;
-  HOLO.tilt.ty = nx * 10;
-  HOLO.tilt.tx = ny * 8;
-});
-$('home-view').addEventListener('pointerleave', () => {
-  HOLO.tilt.tx = 0;
-  HOLO.tilt.ty = 0;
-});
+// ---------------------------------------------------------------- Главная страница
 
-// ---------------------------------------------------------------- Главная (NK-Wave)
+// Звёзды и восходящие искры в фоне сцены — раскидываются один раз при старте
+function initHomeBgFx() {
+  if (initHomeBgFx.done) return;
+  initHomeBgFx.done = true;
+  const stars = document.getElementById('home-stars');
+  const ash = document.getElementById('home-ash');
+  if (!stars || !ash) return;
+  const rnd = (a, b) => a + Math.random() * (b - a);
+  const starCol = ['#dfeaff', '#9fc6ff', '#7f9bff', '#c7d5ff'];
+  for (let i = 0; i < 30; i++) {
+    const s = document.createElement('div');
+    const size = rnd(1.5, 3.2).toFixed(1) + 'px';
+    s.className = 'home-star';
+    s.style.left = rnd(1, 99).toFixed(1) + '%';
+    s.style.top = rnd(2, 92).toFixed(1) + '%';
+    s.style.width = size;
+    s.style.height = size;
+    s.style.background = starCol[(Math.random() * starCol.length) | 0];
+    s.style.setProperty('--d', rnd(2.6, 6.5).toFixed(2) + 's');
+    s.style.setProperty('--dl', '-' + rnd(0, 6).toFixed(2) + 's');
+    stars.appendChild(s);
+  }
+  for (let i = 0; i < 16; i++) {
+    const p = document.createElement('div');
+    const size = Math.round(rnd(2, 5));
+    p.className = 'home-ash';
+    p.style.left = rnd(4, 96).toFixed(1) + '%';
+    p.style.width = size + 'px';
+    p.style.height = size + 'px';
+    p.style.setProperty('--d', rnd(11, 22).toFixed(1) + 's');
+    p.style.setProperty('--dl', '-' + rnd(0, 22).toFixed(1) + 's');
+    p.style.setProperty('--o', rnd(.25, .6).toFixed(2));
+    p.style.setProperty('--sx', rnd(-6, 6).toFixed(1) + 'vh');
+    ash.appendChild(p);
+  }
+}
+
+// ---------------------------------------------------------------- Спектрограф подиума
+
+// Спектрограф подиума: частотное кольцо лежит НА подиуме — центр ровно на оси
+// (x=210/420, грань y=456/520 из viewBox), пропорции эллипса — как у грани
+// (ry/rx = 23/156). Частоты берём из уже собранного Web Audio-графа
+// (fx.analyser, fftSize 2048 — 1024 корзины), звук не перестраивается.
+// Бас — по широким бокам (не перекрыт кнопкой ▶), верха — спереди/сзади.
+// Лучи — отдельные фиксированные линии от кольца наружу по полу, случайного
+// дрожания нет вовсе (иначе рисуется «мазня»): вся геометрия луча
+// детерминирована. Длина ×2 от первой версии. Прибой без музыки — тоже
+// чистые лучи. Троттлинг ~30 fps и dpr ≤ 1.25 — чтобы не грузить GPU.
+const podSpectrum = (() => {
+  const cv = $('pod-spectrum');
+  if (!cv) return null;
+  const g = cv.getContext('2d');
+  const view = $('home-view');
+  // Кольцо спектра на плоскости подиума: центр — центр грани подиума,
+  // сжатие эллипса — то же, что у грани (ry/rx = 23/156). Канвас шире сцены
+  // (160%), но его центр совпадает с осью подиума → CXR = 0.5.
+  const CXR = 0.5, CYR = 456 / 520, SQ = 23 / 156;
+  const F_TOP = 12000, F_BOT = 55;
+  // Параметры лучей — ползунки в настройках (settings.spec*). settings объявлен
+  // ниже по файлу, поэтому читаем лениво: на первом кадре и при setParams().
+  let RAYS = 52;               // лучей по окружности кольца
+  let THICK = 1, LENM = 1, DOTS = 1, ENABLED = true;
+  let INT_BASS = 1, INT_MID = 1, INT_HIGH = 1;
+  let cfgLoaded = false;
+  function loadCfg() {
+    if (cfgLoaded) return;
+    cfgLoaded = true;
+    try {
+      THICK = Math.min(2.5, Math.max(0.5, Number(settings.specThick) || 1));
+      LENM = Math.min(2, Math.max(0.5, Number(settings.specLen) || 1));
+      DOTS = Math.min(2, Math.max(0.5, Number(settings.specDots) || 1));
+      INT_BASS = Math.min(2, Math.max(0.5, Number(settings.specIntBass) || 1));
+      INT_MID = Math.min(2, Math.max(0.5, Number(settings.specIntMid) || 1));
+      INT_HIGH = Math.min(2, Math.max(0.5, Number(settings.specIntHigh) || 1));
+      ENABLED = settings.specEnabled !== false;
+      const r = Math.round(Math.min(96, Math.max(24, Number(settings.specRays) || 52)));
+      if (r !== RAYS) {
+        RAYS = r; smooth = new Float32Array(RAYS); framePk = new Float32Array(RAYS);
+        prevPk = new Float32Array(RAYS); fluxEnv = new Float32Array(RAYS);
+        frameFlux = new Float32Array(RAYS); bins = null;
+      }
+    } catch (e) { /* settings ещё не готов — работаем на дефолтах */ }
+  }
+  function setParams() { cfgLoaded = false; loadCfg(); }
+  const BUF = new Uint8Array(1024);
+  let smooth = new Float32Array(RAYS);
+  let framePk = new Float32Array(RAYS);  // пики полос текущего кадра
+  let prevPk = new Float32Array(RAYS);   // пики прошлого кадра (для потока)
+  let fluxEnv = new Float32Array(RAYS);  // огибающая потока — масштаб бита
+  let frameFlux = new Float32Array(RAYS);// бит-составляющая 0..1
+  let fMaxS = 0;                         // сглаженный максимум кадра
+  let W = 0, H = 0, SW = 0, SH = 0, dpr = 1, bins = null, binsSr = 0;
+  let idle = Math.random() * 10;
+  let last = 0;                // троттлинг кадра — спектру хватает 30 fps
+
+  // Спрайты частиц: мягкие круглые градиенты — рисуются быстрее arc-заливок
+  const SPR = [
+    ['rgba(238,248,255,1)', 'rgba(220,240,255,.38)'],   // белое-горячее (у ядра)
+    ['rgba(150,228,255,1)', 'rgba(110,205,255,.35)'],   // циан
+    ['rgba(80,170,255,1)', 'rgba(55,135,255,.3)'],      // синий
+    ['rgba(40,95,235,1)', 'rgba(28,70,190,.28)']        // глубокий синий (кончики)
+  ].map(([c0, c1]) => {
+    const s = document.createElement('canvas');
+    s.width = s.height = 16;
+    const c2 = s.getContext('2d');
+    const rg = c2.createRadialGradient(8, 8, 0, 8, 8, 8);
+    rg.addColorStop(0, c0);
+    rg.addColorStop(0.5, c1);
+    rg.addColorStop(1, 'rgba(0,0,0,0)');
+    c2.fillStyle = rg;
+    c2.fillRect(0, 0, 16, 16);
+    return s;
+  });
+
+  function hsh(n) { const s = Math.sin(n) * 43758.5453; return s - Math.floor(s); }
+
+  // Полоса частот на колонку. Раньше соседние лучи слушали одни и те же
+  // корзины FFT (окно ±3 при ширине корзины ~23 Гц) — весь басовый бок
+  // горел в такт одному басу. Теперь: непересекающиеся логарифмические
+  // полосы — каждый луч (точнее, зеркальная пара лучей) слушает только
+  // свою. |cos φ|=1 — широкие бока кольца (там бас), спереди/сзади — верха.
+  function rayBins() {
+    const sr = fx.ctx ? fx.ctx.sampleRate : 0;
+    if (bins && (sr === binsSr || !sr)) return bins;
+    const hz = (sr || 48000) / 2 / BUF.length;
+    binsSr = sr || 48000;
+    const bBot = Math.max(1, Math.round(F_BOT / hz));
+    const bTop = Math.min(BUF.length - 1, Math.round(F_TOP / hz));
+    const half = Math.ceil(RAYS / 2);        // различных позиций pos (зеркальные пары)
+    const out = [], seen = [];
+    for (let i = 0; i < RAYS; i++) {
+      const theta = ((i + 0.5) / RAYS) * Math.PI * 2;   // тот же шаг, что в отрисовке
+      const pos = 1 - Math.abs(Math.cos(theta));  // 0 = бока (бас), 1 = фронт/тыл (верх)
+      const k = Math.min(half - 1, Math.floor(pos * half));
+      let band = seen[k];
+      if (!band) {
+        const f0 = F_BOT * Math.pow(F_TOP / F_BOT, k / half);
+        const f1 = F_BOT * Math.pow(F_TOP / F_BOT, (k + 1) / half);
+        const b0 = Math.max(bBot, Math.round(f0 / hz));
+        const b1 = Math.max(b0, Math.min(bTop, Math.round(f1 / hz) - 1));
+        band = [b0, b1, 1 + pos * 0.35, pos];   // boost верхам; pos — для бита
+        seen[k] = band;
+      }
+      out.push(band);
+    }
+    bins = out;
+    return bins;
+  }
+
+  function resize() {
+    const r = cv.getBoundingClientRect();
+    if (!r.width) return;
+    dpr = Math.min(1.25, window.devicePixelRatio || 1);
+    W = r.width; H = r.height;
+    // Сцена (бокс кота) — якорь для размера кольца: канвас шире сцены, и
+    // привязка к W раздула бы кольцо при смене CSS-ширины канваса
+    const box = cv.parentElement.getBoundingClientRect();
+    SW = box.width; SH = box.height;
+    cv.width = Math.round(W * dpr);
+    cv.height = Math.round(H * dpr);
+  }
+
+  // Амплитуда колонки 0..1. Живая — микс двух составляющих по частоте:
+  // бас работает от БИТА (всплеск энергии: кик — выстрел, между ударами —
+  // сложился), верха и середина — от относительного уровня в спектре.
+  // Пауза/без музыки: медленный прибой, бегущий по кольцу.
+  function amp(i, live) {
+    if (live) {
+      const pos = rayBins()[i][3] || 0;            // 0 = бас, 1 = верха
+      const rel = fMaxS > 1 ? Math.pow(framePk[i] / fMaxS, 1.5) * 1.08 : 0;
+      // Интенсивность своей зоны: бас → середина → верха, плавные переходы
+      const w = pos * 2;
+      const intens = w <= 1
+        ? INT_BASS + (INT_MID - INT_BASS) * w
+        : INT_MID + (INT_HIGH - INT_MID) * (w - 1);
+      const target = Math.min(1, (frameFlux[i] * (0.75 - 0.35 * pos) + rel * (0.25 + 0.35 * pos)) * 1.1 * intens);
+      smooth[i] += (target - smooth[i]) * (target > smooth[i] ? 0.7 : 0.16);
+      return Math.min(1, smooth[i]);
+    }
+    smooth[i] *= 0.92;
+    const phi = (i / RAYS) * Math.PI * 2;
+    const wave = 0.05 + 0.085 * (0.5 + 0.5 * Math.sin(phi * 2 + idle * 1.25))
+               * (0.55 + 0.45 * Math.sin(idle * 0.4 + 1.9));
+    return Math.min(1, wave + smooth[i] * 0.7);
+  }
+
+  function frame(ts) {
+    requestAnimationFrame(frame);
+    if (ts - last < 33) return;      // ~30 fps: для визуализации достаточно
+    last = ts;
+    if (!view || view.classList.contains('hidden')) return;
+    // Сцена долгое время может быть скрыта (login/другие вкладки): canvas
+    // тогда нулевой. Самолечение — перемеряем, как только она появилась.
+    if (!W) resize();
+    if (!W || !SW) return;
+    const an = fx.spectrum || fx.analyser;
+    const live = !!(an && fx.ctx && fx.ctx.state === 'running' && !audio.paused);
+    if (live) {
+      try { an.getByteFrequencyData(BUF); } catch (e) { /* ок */ }
+      // Пики всех полос кадра + сглаженный максимум. Лучи показывают
+      // ОТНОСИТЕЛЬНУЮ форму спектра: громкая полоса гонит свой луч на полную,
+      // остальные стоят по отношению к ней — кик поднимает басовые бока,
+      // а не весь круг разом (на сведённых мастерах все полосы и так высоки).
+      const bn = rayBins();
+      let mx = 0;
+      for (let i = 0; i < RAYS; i++) {
+        const [b0, b1, boost] = bn[i];
+        let pk = 0;
+        for (let b = b0; b <= b1; b++) if (BUF[b] > pk) pk = BUF[b];
+        framePk[i] = pk < 18 ? 0 : pk * boost;   // отсечка тишины полосы
+        if (framePk[i] > mx) mx = framePk[i];
+        // Бит: всплеск энергии относительно прошлого кадра (спектральный поток),
+        // нормированный на огибающую потока полосы — кик даёт ~1, между
+        // ударами 0. Огибающая: быстрый подъём, спад ~1 с — масштаб трека.
+        const flux = Math.max(0, pk - prevPk[i]);
+        prevPk[i] = pk;
+        if (flux > fluxEnv[i]) fluxEnv[i] += (flux - fluxEnv[i]) * 0.5;
+        else fluxEnv[i] *= 0.965;
+        frameFlux[i] = fluxEnv[i] > 12 ? Math.min(1, flux / fluxEnv[i]) : 0;
+      }
+      fMaxS += (mx - fMaxS) * (mx > fMaxS ? 0.5 : 0.22);
+    }
+    idle = ts / 1000;
+    loadCfg();
+    // Спектрограф выключен настройкой: гасим канвас и не рисуем
+    if (!ENABLED) {
+      if (W) { g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H); }
+      return;
+    }
+
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, W, H);
+    const cx = W * CXR, cy = H * CYR;
+    // Кольцо привязано к СЦЕНЕ (та же пропорция, что и раньше при канвасе 160%:
+    // 0.23*1.6 = 0.368 ширины сцены), а не к канвасу
+    const Rx = Math.min(SW * 0.368, SH * 0.42);
+    const Ry = Rx * SQ;                          // сжатие как у грани подиума
+    const L = Rx * 0.92;                         // вылет лучей по полу
+    // Мягкий предел длины: до края канваса, чтобы лучи на предельной длине
+    // затухали у границы, а не резались об неё вертикальной чертой
+    const MAXLEN = Math.max(0, W / 2 - (Rx + 2.5) - 6);
+    let aAvg = 0;
+
+    g.globalCompositeOperation = 'lighter';
+
+    // Прямые лучи по полу: каждый луч — ровная линия точек от кольца наружу,
+    // строго по радиусу (в экранных координатах — прямая, сжатие SQ даёт
+    // перспективу пола). Без закручивания и случайных дрожаний — мазни нет.
+    for (let i = 0; i < RAYS; i++) {
+      const phi = ((i + 0.5) / RAYS) * Math.PI * 2;
+      const a = amp(i, live);
+      aAvg += a / RAYS;
+      if (a <= 0.02) continue;
+      const depth = (Math.sin(phi) + 1) / 2;     // 1 спереди, 0 позади
+      const len = Math.min(L * LENM * a * (0.8 + 0.4 * depth), MAXLEN);
+      if (len < 4) continue;
+      const r0 = Rx + 2.5;
+      const ca = Math.cos(phi), sa = Math.sin(phi);
+      // Направляющая линия — держит луч собранным
+      g.globalAlpha = (0.06 + 0.16 * a) * (0.4 + 0.6 * depth);
+      g.strokeStyle = '#60beff';
+      g.lineWidth = 1.1 * THICK;
+      g.beginPath();
+      g.moveTo(cx + r0 * ca, cy + r0 * sa * SQ);
+      g.lineTo(cx + (r0 + len) * ca, cy + (r0 + len) * sa * SQ);
+      g.stroke();
+      // Точки по лучу: у кольца плотнее и горячее, к кончику реже и синее.
+      // С толщиной растёт и число точек — иначе на максимуме они сливаются
+      // в мыло; сам размер при этом растёт мягче (сублинейно)
+      const count = Math.min(48, Math.max(3, Math.round((6 + a * 10) * DOTS * THICK)));
+      for (let d = 0; d < count; d++) {
+        const t = Math.pow((d + 0.5) / count, 0.8);
+        const rrr = r0 + len * t;
+        const x = cx + rrr * ca;
+        const y = cy + rrr * sa * SQ;
+        const ci = t < 0.25 ? 0 : t < 0.5 ? 1 : t < 0.8 ? 2 : 3;
+        const size = (2.8 - 1.3 * t + a * 1.5) * (0.75 + 0.5 * depth) * (0.55 + 0.45 * THICK);
+        g.globalAlpha = (0.35 + 0.65 * a) * (1 - t * 0.42) * (0.45 + 0.55 * depth);
+        g.drawImage(SPR[ci], x - size / 2, y - size / 2, size, size);
+      }
+    }
+
+    // Кольцо: многослойное свечение по эллипсу на поверхности подиума
+    g.globalAlpha = 1;
+    g.lineCap = 'round';
+    g.strokeStyle = 'rgba(28, 96, 255, ' + (0.15 + 0.12 * aAvg).toFixed(3) + ')';
+    g.lineWidth = 8 + 10 * aAvg;
+    g.beginPath(); g.ellipse(cx, cy, Rx, Ry, 0, 0, Math.PI * 2); g.stroke();
+    g.strokeStyle = 'rgba(92, 190, 255, ' + (0.42 + 0.35 * aAvg).toFixed(3) + ')';
+    g.lineWidth = 2.6;
+    g.beginPath(); g.ellipse(cx, cy, Rx, Ry, 0, 0, Math.PI * 2); g.stroke();
+    // спереди дуга чуть ярче — теперь замкнута в полное кольцо
+    g.strokeStyle = 'rgba(235, 250, 255, ' + (0.7 + 0.25 * aAvg).toFixed(3) + ')';
+    g.lineWidth = 1.4;
+    g.beginPath(); g.ellipse(cx, cy, Rx, Ry, 0, 0, Math.PI * 2); g.stroke();
+    g.globalCompositeOperation = 'source-over';
+    g.globalAlpha = 1;
+  }
+
+  window.addEventListener('resize', resize);
+  // ResizeObserver докручивает: срабатывает и на смену display hidden/видимо,
+  // и на изменение высоты окна (ctx-размер driven vh-шириной .home-cat)
+  if (window.ResizeObserver) new ResizeObserver(resize).observe(cv);
+  resize();
+  requestAnimationFrame(frame);
+  return { resize, setParams };
+})();
 
 // Большая кнопка на главной: продолжить current, если он есть, иначе начать
-// очередь из текущего списка. Иконка/состояние тянется от событий audio.
+// очередь с «Моей музыки». Иконка/состояние тянется от событий audio.
 function updateHomePlay() {
   const playing = !!state.current && !audio.paused && !audio.ended;
   $('home-play').classList.toggle('playing', playing);
@@ -1277,18 +1672,39 @@ function updateHomePlay() {
 }
 
 $('home-play').addEventListener('click', async () => {
-  // Умный режим: без играющего трека строим умную очередь.
-  // Холодный старт — из любимых артистов + исследование библиотеки
+  // Без играющего трека начинаем очередь с «Моей музыки»
   if (!state.current) {
-    await startSmartQueue(null);
+    if (!state.myTracks || !state.myTracks.length) {
+      try { await loadMyTracks(); } catch (e) { state.myTracks = null; }
+    }
+    if (state.myTracks && state.myTracks.length) {
+      startQueue(state.myTracks, firstPlayable(state.myTracks));
+      return;
+    }
+    toast('Библиотека пуста — войдите в ВК или добавьте свои файлы');
     return;
   }
   togglePlay();
 });
-    $('home-settings').addEventListener('click', openSmartSettings);
-$('home-settings').title = 'Настройки умного режима';
+
 audio.addEventListener('play', updateHomePlay);
-audio.addEventListener('pause', updateHomePlay);
+audio.addEventListener('pause', () => {
+  savePlaybackNow();
+  updateHomePlay();
+});
+audio.addEventListener('seeked', () => {
+  schedulePlaybackSave();
+});
+// Сохраняем позицию внутри трека короткой записью, полный сейв — по смене трека
+let playbackSeekSaveTime = 0;
+audio.addEventListener('timeupdate', () => {
+  if (!state.current || audio.paused) return;
+  const now = Date.now();
+  if (now - playbackSeekSaveTime < 4000) return;
+  playbackSeekSaveTime = now;
+  try { localStorage.setItem(PLAYBACK_SEEK_KEY, String(Math.max(0, audio.currentTime || 0))); } catch (e) { /* ок */ }
+});
+window.addEventListener('beforeunload', () => { savePlaybackNow(); });
 audio.addEventListener('ended', updateHomePlay);
 updateHomePlay();
 
@@ -1611,11 +2027,6 @@ function renderTracks() {
     ? all.filter((t) => `${t.artist} ${t.title}`.toLowerCase().includes(q))
     : all.slice();
 
-  // «Скрывать дизлайки в списках»: полностью убираем их из любой выдачи
-  if (smart.knobs.hideDisliked) {
-    state.displayed = state.displayed.filter((t) => smartFav(t) !== -1);
-  }
-
   // В очереди номер строки не совпадает с позицией в order, если включён фильтр,
   // поэтому запоминаем настоящие позиции по самим объектам треков.
   state.orderOf = new Map();
@@ -1678,7 +2089,6 @@ function createTrackRow(track, idx) {
     row.title = 'Трек недоступен';
   }
   if (state.current && state.current.id === track.id) row.classList.add('active');
-  if (smartFav(track) === -1) row.classList.add('disliked');
 
   const num = document.createElement('div');
   num.className = 'track-num';
@@ -1745,36 +2155,6 @@ function createTrackRow(track, idx) {
     openAddToPlaylist(e, track);
   });
   actions.appendChild(plBtn);
-
-  // ---- Умный режим: лайк / дизлайк прямо в строке
-  const likeBtn = document.createElement('button');
-  likeBtn.className = 'track-act like' + (smartFav(track) === 1 ? ' on' : '');
-  likeBtn.title = 'Любимый трек';
-  likeBtn.setAttribute('aria-label', 'Любимый трек');
-  likeBtn.textContent = '♥';
-  likeBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const on = smartFav(track) !== 1;
-    smartToggleFav(track, on);
-    likeBtn.classList.toggle('on', on);
-    toast(on ? '♥ «' + track.title + '» — любимый' : '♥ снят');
-  });
-  actions.appendChild(likeBtn);
-
-  const dislikeBtn = document.createElement('button');
-  dislikeBtn.className = 'track-act dislike' + (smartFav(track) === -1 ? ' on' : '');
-  dislikeBtn.title = 'Не нравится — не будет играть в умном режиме';
-  dislikeBtn.setAttribute('aria-label', 'Не нравится');
-  dislikeBtn.textContent = '👎';
-  dislikeBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const on = smartFav(track) !== -1;
-    smartToggleDislike(track, on);
-    dislikeBtn.classList.toggle('on', on);
-    row.classList.toggle('disliked', on);
-    toast(on ? '👎 «' + track.title + '» — не нравится' : 'Трек возвращён в умный режим');
-  });
-  actions.appendChild(dislikeBtn);
 
   // Удаление из конкретного плейлиста — только когда он открыт
   const cur = state.view;
@@ -1844,17 +2224,6 @@ function openTrackMenu(e, track) {
   if (track.artist && track.artist !== '—') {
     frag.appendChild(ctxItem(`Все треки: ${track.artist}`, '♪', () => openArtist(track.artist)));
   }
-
-  // Умный режим: лайк/дизайкл из меню — для тех, кто не пользуется хоткнопками
-  const st = smartFav(track);
-  frag.appendChild(ctxItem(st === -1 ? 'Вернуть в умный режим' : 'Не нравится (без умного режима)', '✖', () => {
-    smartToggleDislike(track, st !== -1);
-    renderTracks();
-  }));
-  frag.appendChild(ctxItem(st === 1 ? 'Убрать из любимых' : 'Любимый трек', '♥', () => {
-    smartToggleFav(track, st !== 1);
-    renderTracks();
-  }));
 
   const cur = state.view;
   if (cur.type === 'local-playlist') {
@@ -2222,7 +2591,6 @@ function buildOrder(startIndex) {
 // startIndex === null — начать со случайного трека (для перемешивания)
 function startQueue(list, startIndex) {
   state.queue = list.slice();
-  state.smart = false; // умный режим сбрасывается любым ручным стартом очереди
   buildOrder(startIndex);
   updateQueueNav();
   playAt(state.pos);
@@ -2391,17 +2759,13 @@ async function playAt(pos, { force = false, skipped = 0, waits = 0 } = {}) {
   const track = state.queue[state.order[pos]];
   if (!track) return;
 
-  // Умный режим: закрыть сессию предыдущего трека и открыть новую.
-  // force-ретрай того же трека сессией не считать
-  if (!(force && track === state.current)) smartFinishSession(false);
-
   const token = ++state.playToken;
-  // Кроссфейд: это целевой переход — теневой хвост продолжает дотягивать старый
-  // трек, иначе переход (например, ручной клик) просто гасит его.
+  // Переход: это целевое включение — фейды (гашение/нарастание) уже идут,
+  // сбрасывать их нельзя; любой другой переход просто гасит автоматику.
   if (!(cf.blend && cf.blendPos === pos)) cfCleanup();
   state.pos = pos;
   state.current = track;
-  smartOpenSession(track);
+  schedulePlaybackSave();
   if (!force) state.retried = false;
   updateNowPlaying();
   highlightCurrent();
@@ -2472,14 +2836,33 @@ function loadSource(url) {
 
   // Уровень нового трека: обычный переход — сразу полная громкость, кроссфейд —
   // нарастание из нуля за время смешения, пока теневой хвост затихает.
-  if (fx.ctx && fx.fadeGain && !eq.failed) {
+  if (fx.ctx && fx.fadeGain && fx.mainGain && !eq.failed) {
     const t = fx.ctx.currentTime;
     fx.fadeGain.gain.cancelScheduledValues(t);
     if (cf.blend && settings.crossfade > 0) {
-      fx.fadeGain.gain.setValueAtTime(0.0001, t);
-      fx.fadeGain.gain.exponentialRampToValueAtTime(1, t + Math.max(0.4, settings.crossfade));
+      // Фаза 2 последовательного перехода: старый трек уже погас (фейд-аут
+      // запустил crossfadeTick), нарастаем из нуля за CF секунд. Общий
+      // fadeGain не трогаем — он вне перехода.
+      cf.fadeOut = false;
+      const span = Math.max(0.4, settings.crossfade);
+      killGainAuto(fx.mainGain.gain, t, 0.0001);
+      try {
+        fx.mainGain.gain.setValueCurveAtTime(cfCurveIn, t, span);
+      } catch (e) {
+        fx.mainGain.gain.linearRampToValueAtTime(1, t + span);
+      }
+      // Blend держим до конца нарастания: AGC заморожен, следующий
+      // переход не стартует раньше времени
+      if (cf.timer) clearTimeout(cf.timer);
+      cf.timer = setTimeout(() => {
+        cf.blend = false;
+        cf.blendPos = -1;
+        cf.timer = 0;
+      }, (span + 0.3) * 1000);
     } else {
-      fx.fadeGain.gain.setValueAtTime(1, t);
+      killGainAuto(fx.fadeGain.gain, t, 1);
+      // оборванный кроссфейд (скип/стоп посреди смешения) — выравниваем
+      killGainAuto(fx.mainGain.gain, t, 1);
     }
   }
 
@@ -2549,13 +2932,7 @@ function nextPos() {
 }
 
 function playNext() {
-  let next = nextPos();
-  // Умный режим безграничен: упёрлись в конец очереди (докрутили или скипами) —
-  // добираем продолжение и играем дальше
-  if (next === -1 && state.smart) {
-    smartExtendQueue();
-    next = nextPos();
-  }
+  const next = nextPos();
   if (next !== -1) playAt(next);
 }
 
@@ -2571,6 +2948,13 @@ $('btn-next').addEventListener('click', playNext);
 $('btn-prev').addEventListener('click', playPrev);
 
 audio.addEventListener('loadedmetadata', () => {
+  // Восстановленная сессия: первый загруженный метадата — прыгаем на
+  // сохранённое место (не ровно в конец, чтобы не сработал 'ended')
+  if (state.resumeSeek > 0 && isFinite(audio.duration)) {
+    const at = Math.min(state.resumeSeek, Math.max(0, audio.duration - 2));
+    try { audio.currentTime = at; } catch (e) { /* перемотка не критична */ }
+  }
+  state.resumeSeek = 0;
   // Длительность локального файла узнаём только после загрузки — запоминаем
   if (state.current && state.current.local && isFinite(audio.duration)) {
     const dur = Math.round(audio.duration);
@@ -2585,14 +2969,12 @@ audio.addEventListener('loadedmetadata', () => {
 });
 
 audio.addEventListener('ended', () => {
-  smartFinishSession(true);
   if (state.repeat === 'one') {
     audio.currentTime = 0;
     audio.play().catch(() => {});
-    smartOpenSession(state.current); // сессия повторного прослушивания продолжается
     return;
   }
-  playNext(); // умный режим добирает продолжение сам (см. playNext)
+  playNext();
 });
 
 function togglePlay() {
@@ -2601,6 +2983,12 @@ function togglePlay() {
     return;
   }
   if (audio.paused) {
+    if (!audio.src) {
+      // Источника нет — это восстановленная сессия: выполняем полноценный
+      // старт трека (разрешит ссылки) и продолжим с сохранённой позиции
+      playAt(state.pos);
+      return;
+    }
     audio.play().catch(() => {});
   } else {
     pauseWithFade();
@@ -2653,7 +3041,16 @@ const DEFAULT_SETTINGS = {
   bassBoost: 0,        // дБ, 0..12
   surround: false,     // расширение стереобазы
   fadePause: true,     // плавное затухание при паузе
-  cacheLimitMB: 2048   // 50..5120 МБ
+  cacheLimitMB: 2048,  // 50..5120 МБ
+  // Спектр на подиуме
+  specThick: 1,        // множитель толщины лучей 0.5..2.5
+  specLen: 1,          // множитель длины лучей 0.5..2
+  specRays: 52,        // число лучей 24..96
+  specDots: 1,         // множитель плотности точек 0.5..2
+  specIntBass: 1,      // интенсивность баса 0.5..2
+  specIntMid: 1,       // интенсивность середины 0.5..2
+  specIntHigh: 1,      // интенсивность верхов 0.5..2
+  specEnabled: true    // спектрограф включён (иначе — скрыт)
 };
 let settings = (() => {
   try {
@@ -2673,7 +3070,10 @@ function saveSettings() {
 // Все узлы всегда в графе, но прозрачны, пока соответствующая опция выключена.
 const fx = {
   ctx: null, bass: null, bypass: null, haasMix: null,
-  normGain: null, analyser: null, fadeGain: null, agcTimer: 0
+  normGain: null, analyser: null, fadeGain: null, agcTimer: 0,
+  spectrum: null,   // отдельный анализатор спектрографа — прямо на источнике
+  mainGain: null,   // фейд-ин главного элемента при кроссфейде
+  eqIn: null        // вход общей цепочки (EQ) — сюда заводится хвост
 };
 
 const eq = {
@@ -2698,6 +3098,20 @@ function ensureEqGraph() {
 
     const ctx = new Ctx();
     const src = ctx.createMediaElementSource(audio);
+
+    // Спектрографу — свой анализатор прямо на источнике: до эквалайзера и
+    // басового усиления. Тап после бас-буста врёт: перегруженный бас кладёт
+    // гармоники во весь спектр, и все лучи встают от одного кика.
+    const specAn = ctx.createAnalyser();
+    specAn.fftSize = 2048;
+    specAn.smoothingTimeConstant = 0.45;
+    src.connect(specAn);
+
+    // mainGain — фейд-ин главного элемента при кроссфейде. Отдельный гейн:
+    // хвост (cfGain) идёт через ту же цепочку параллельно, но без фейд-ина.
+    const mainGain = ctx.createGain();
+    src.connect(mainGain);
+
     const nodes = EQ_FREQS.map((freq) => {
       const node = ctx.createBiquadFilter();
       node.type = 'peaking';
@@ -2707,7 +3121,7 @@ function ensureEqGraph() {
       return node;
     });
     const gain = ctx.createGain();
-    let prev = src;
+    let prev = mainGain;
     for (const node of nodes) {
       prev.connect(node);
       prev = node;
@@ -2772,6 +3186,9 @@ function ensureEqGraph() {
     fx.haasMix = haasMix;
     fx.normGain = normGain;
     fx.analyser = analyser;
+    fx.spectrum = specAn;
+    fx.mainGain = mainGain;
+    fx.eqIn = nodes[0];
     fx.fadeGain = fadeGain;
 
     applyEq();
@@ -2822,6 +3239,9 @@ function applyFx() {
 const AGC_BUF = new Float32Array(2048);
 function agcTick() {
   if (!fx.analyser || !fx.ctx || audio.paused) return;
+  // Кроссфейд: суммарный уровень хвоста и нового трека — рукотворный, AGC не
+  // должен «дожимать» гейн за него, иначе после смешения громкость взлетает
+  if (cf.blend) return;
   try { fx.analyser.getFloatTimeDomainData(AGC_BUF); } catch (e) { return; }
   let sum = 0;
   for (let i = 0; i < AGC_BUF.length; i++) sum += AGC_BUF[i] * AGC_BUF[i];
@@ -2842,17 +3262,32 @@ function restartAgc() {
   }
 }
 
+// Отмена автоматики гейна. Нюанс: cancelScheduledValues не отменяет уже
+// идущую setValueCurveAtTime (её событие в прошлом), а вставка setValueAtTime
+// внутрь активной кривой кидает NotSupportedError. Поэтому глушим через
+// cancelAndHoldAtTime, где поддерживается, и страхуемся try/catch.
+function killGainAuto(param, t, value) {
+  try {
+    if (param.cancelAndHoldAtTime) param.cancelAndHoldAtTime(t);
+    else param.cancelScheduledValues(t);
+  } catch (e) { /* параметр уже чист */ }
+  try { param.setValueAtTime(value, t); } catch (e) { /* ок */ }
+}
+
 // Мастер-гейн возвращаем в единицу (после затухания/кроссфейда)
 function restoreFadeGain() {
   if (!fx.ctx || !fx.fadeGain) return;
   const t = fx.ctx.currentTime;
-  fx.fadeGain.gain.cancelScheduledValues(t);
-  fx.fadeGain.gain.setValueAtTime(1, t);
+  killGainAuto(fx.fadeGain.gain, t, 1);
+  if (fx.mainGain) killGainAuto(fx.mainGain.gain, t, 1);
 }
 
 // Плавное затухание при паузе: сначала гейн в ноль, потом элемент на паузу.
 // Кроссфейд-смешение не трогаем — под ним своя логика уровней.
 function pauseWithFade() {
+  // Пауза посреди гашения: WebAudio-часы идут и во время паузы — кривая
+  // догорела бы «мимо» и оставила тишину после возобновления. Отменяем.
+  if (cf.blend && cf.fadeOut) cfCleanup();
   if (!fx.ctx || eq.failed || !settings.fadePause) { audio.pause(); return; }
   const t = fx.ctx.currentTime;
   if (!cf.blend) {
@@ -2866,84 +3301,61 @@ function pauseWithFade() {
   }, 220);
 }
 
-// ---------------------------------------------------------------- Кроссфейд
+// ------------------------------------------------------- Переход между треками
 
-// Схема: за CF-секунды до конца текущего трека переключаем главный <audio> на
-// следующий трек сразу (он нарастает из нуля за CF), а хвост старого дотягивает
-// теневой элемент audio2 через собственный гейн, затухающий параллельно.
-// Состояние, прогресс и очередь остаются на главном элементе — рисков минимум.
-const cf = { blend: false, blendPos: -1, audio2: null, source: null, gain: null, timer: 0 };
+// Схема ПОСЛЕДОВАТЕЛЬНОГО перехода (без наложения дорожек): за CF-секунд до
+// конца трека его уровень плавно гаснет до нуля (cos-кривая на mainGain),
+// по естественному 'ended' включается следующий трек и за CF секунд плавно
+// нарастает (sin-кривая там же). Дорожки никогда не звучат одновременно.
+const cf = { blend: false, blendPos: -1, fadeOut: false, timer: 0 };
 
 function cfCleanup() {
   if (cf.timer) { clearTimeout(cf.timer); cf.timer = 0; }
   cf.blend = false;
   cf.blendPos = -1;
-  if (cf.audio2) {
-    try {
-      cf.audio2.pause();
-      cf.audio2.removeAttribute('src');
-      cf.audio2.load();
-    } catch (e) { /* ок */ }
-  }
-  if (cf.gain && fx.ctx) {
-    const t = fx.ctx.currentTime;
-    cf.gain.gain.cancelScheduledValues(t);
-    cf.gain.gain.setValueAtTime(0, t);
+  cf.fadeOut = false;
+  // Оборванный переход мог оставить главный элемент приглушённым
+  if (fx.mainGain && fx.ctx) {
+    killGainAuto(fx.mainGain.gain, fx.ctx.currentTime, 1);
   }
 }
 
-// Запускает теневой хвост старого трека; вызывает ПЕРЕД playAt(next),
-// чтобы основной элемент мгновенно освободился под новый источник.
-function cfStartTail() {
-  if (!fx.ctx || eq.failed) return false;
-  const played = audio.currentSrc || audio.src || '';
-  if (!played) return false;
-  if (!cf.audio2) {
-    cf.audio2 = document.createElement('audio');
-    cf.audio2.preload = 'auto';
-  }
-  const t = fx.ctx.currentTime;
-  cf.audio2.src = played;
-  try { cf.audio2.currentTime = audio.currentTime || 0; } catch (e) { /* ещё не готово */ }
-  if (!cf.source) {
-    cf.source = fx.ctx.createMediaElementSource(cf.audio2);
-    cf.gain = fx.ctx.createGain();
-    cf.gain.gain.value = 0;
-    cf.source.connect(cf.gain);
-    cf.gain.connect(fx.ctx.destination);
-  }
-  cf.blend = true;
-  // Позиция целевого трека в order — её использует playAt; заодно guard в playAt
-  cf.blendPos = state.pos + 1 < state.order.length ? state.pos + 1 : -1;
-  // Хвост играет на полном уровне, пока основной уже escalate на новый трек
-  const span = Math.max(0.4, settings.crossfade);
-  cf.gain.gain.cancelScheduledValues(t);
-  cf.gain.gain.setValueAtTime(1, t);
-  cf.gain.gain.linearRampToValueAtTime(0.0001, t + span);
-  // Хостинг: главный элемент мгновенно переходит на новый источник — его гейном
-  // мы управляем из loadSource (fade-in). Хвост сам заглушится: убираем следы.
-  cf.timer = setTimeout(() => {
-    if (cf.blend) { cf.blend = false; cf.blendPos = -1; }
-    if (cf.audio2) { try { cf.audio2.pause(); } catch (e) {} }
-    restoreFadeGain();
-  }, (span + 0.6) * 1000);
-  return true;
+// Формы затухания и нарастания: косинус/синус — на краях скорость изменения
+// нулевая, стык без щелчков и без «полки» посередине.
+const CF_STEPS = 33;
+const cfCurveOut = new Float32Array(CF_STEPS); // гашение: 1 → 0
+const cfCurveIn = new Float32Array(CF_STEPS);  // нарастание: 0 → 1
+for (let i = 0; i < CF_STEPS; i++) {
+  const th = (i / (CF_STEPS - 1)) * Math.PI / 2;
+  cfCurveOut[i] = Math.cos(th);
+  cfCurveIn[i] = Math.sin(th);
 }
 
 function crossfadeTick() {
   const CF = Number(settings.crossfade) || 0;
   if (CF <= 0 || cf.blend || isSeeking) return;
   if (!state.current || state.repeat === 'one') return;
+  if (!fx.ctx || eq.failed || !fx.mainGain) return;
   const remain = audio.duration - audio.currentTime;
   if (!isFinite(remain) || remain <= 0) return;
   if (remain > CF) return;
-  // Перекрытие имеет смысл только когда есть куда переходить
   const next = nextPos();
   if (next === -1 || next === state.pos) return;
-  // Момент переключения: хвостовой гейн продолжает старый трек, основной
-  // элемент сразу уходит под новый источник (fade-in делает loadSource)
-  if (!cfStartTail()) return; // нет Web Audio — остаётся обычный ended-переход
-  playAt(next);
+  // Фаза 1: гасим ТЕКУЩИЙ трек до нуля к его естественному концу. Источник
+  // не трогаем — переключение произойдёт в 'ended' → playAt(next), а фазу 2
+  // (плавное нарастание нового) сделает loadSource.
+  cf.blend = true;
+  cf.fadeOut = true;
+  cf.blendPos = next;
+  const t = fx.ctx.currentTime;
+  killGainAuto(fx.mainGain.gain, t, 1);
+  try {
+    fx.mainGain.gain.setValueCurveAtTime(cfCurveOut, t, remain);
+  } catch (e) {
+    fx.mainGain.gain.linearRampToValueAtTime(0.0001, t + remain);
+  }
+  // Страховка: если 'ended' не придёт (зависший стрим) — отменяем переход
+  cf.timer = setTimeout(() => { if (cf.blend) cfCleanup(); }, (remain + 5) * 1000);
 }
 
 // ---------------------------------------------------------------- Настройки UI
@@ -2963,6 +3375,14 @@ async function refreshCacheStats() {
         ? `Занято ${mb >= 1024 ? Math.round(mb / 102) / 10 + ' ГБ' : mb + ' МБ'} из ${fmtCacheValue(limitMb)} · треков: ${used.count}`
         : `Пусто · лимит ${fmtCacheValue(limitMb)}`;
     }
+    const netRes = await ipcRenderer.invoke('cache:netStats');
+    const net = netRes && netRes.success ? netRes.data : null;
+    if ($('s-cache-net') && net && typeof net.bytes === 'number') {
+      const nmb = Math.round(net.bytes / 1048576);
+      $('s-cache-net').textContent = nmb
+        ? `Сетевой кэш Chromium: ${nmb >= 1024 ? Math.round(nmb / 102) / 10 + ' ГБ' : nmb + ' МБ'} · в лимит не входит`
+        : 'Сетевой кэш Chromium: пусто';
+    }
   } catch (e) { /* панель работает и без статистики */ }
 }
 
@@ -2976,6 +3396,21 @@ function fillSettingsUI() {
   $('s-fade').checked = settings.fadePause;
   $('s-cache').value = settings.cacheLimitMB;
   $('s-cache-v').textContent = fmtCacheValue(settings.cacheLimitMB);
+  $('s-spec-thick').value = settings.specThick;
+  $('s-spec-thick-v').textContent = Math.round(settings.specThick * 100) + '%';
+  $('s-spec-len').value = settings.specLen;
+  $('s-spec-len-v').textContent = Math.round(settings.specLen * 100) + '%';
+  $('s-spec-rays').value = settings.specRays;
+  $('s-spec-rays-v').textContent = settings.specRays;
+  $('s-spec-dots').value = settings.specDots;
+  $('s-spec-dots-v').textContent = Math.round(settings.specDots * 100) + '%';
+  $('s-spec-intb').value = settings.specIntBass;
+  $('s-spec-intb-v').textContent = Math.round(settings.specIntBass * 100) + '%';
+  $('s-spec-intm').value = settings.specIntMid;
+  $('s-spec-intm-v').textContent = Math.round(settings.specIntMid * 100) + '%';
+  $('s-spec-inth').value = settings.specIntHigh;
+  $('s-spec-inth-v').textContent = Math.round(settings.specIntHigh * 100) + '%';
+  $('s-spec-enabled').checked = settings.specEnabled !== false;
   refreshCacheStats();
 }
 
@@ -2986,6 +3421,26 @@ function openSettings() {
 
 function closeSettings() {
   $('settings-backdrop').classList.add('hidden');
+}
+
+// Левая панель настроек: показываем одну группу за раз. Выбор запоминаем на
+// время сеанса, чтобы «Готово» → повторное открытие возвращало туда же.
+let settingsGroup = 'playback';
+
+function showSettingsGroup(name) {
+  const nav = $('settings-backdrop').querySelectorAll('.s-nav-item');
+  const groups = $('settings-backdrop').querySelectorAll('.s-group');
+  let found = false;
+  for (const btn of nav) {
+    const on = btn.dataset.group === name;
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-selected', String(on));
+    if (on) found = true;
+  }
+  if (!found) name = 'playback';
+  for (const g of groups) g.classList.toggle('hidden', g.dataset.group !== name);
+  settingsGroup = name;
+  $('settings-backdrop').querySelector('.settings-scroll').scrollTop = 0;
 }
 
 function applyAllSettings() {
@@ -3003,6 +3458,13 @@ function bindSettingsUI() {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !$('settings-backdrop').classList.contains('hidden')) closeSettings();
   });
+
+  for (const btn of $('settings-backdrop').querySelectorAll('.s-nav-item')) {
+    btn.addEventListener('click', () => showSettingsGroup(btn.dataset.group));
+  }
+  showSettingsGroup(settingsGroup);
+  bindAboutLinks();
+  bindFeedbackUI();
 
   // Воспроизведение
   $('s-crossfade').addEventListener('input', (e) => {
@@ -3035,6 +3497,56 @@ function bindSettingsUI() {
     applyAllSettings();
   });
 
+  // Спектр на подиуме
+  $('s-spec-thick').addEventListener('input', (e) => {
+    settings.specThick = Number(e.target.value);
+    $('s-spec-thick-v').textContent = Math.round(settings.specThick * 100) + '%';
+    saveSettings();
+    if (podSpectrum) podSpectrum.setParams();
+  });
+
+  $('s-spec-len').addEventListener('input', (e) => {
+    settings.specLen = Number(e.target.value);
+    $('s-spec-len-v').textContent = Math.round(settings.specLen * 100) + '%';
+    saveSettings();
+    if (podSpectrum) podSpectrum.setParams();
+  });
+
+  $('s-spec-rays').addEventListener('input', (e) => {
+    settings.specRays = Number(e.target.value);
+    $('s-spec-rays-v').textContent = settings.specRays;
+    saveSettings();
+    if (podSpectrum) podSpectrum.setParams();
+  });
+
+  $('s-spec-dots').addEventListener('input', (e) => {
+    settings.specDots = Number(e.target.value);
+    $('s-spec-dots-v').textContent = Math.round(settings.specDots * 100) + '%';
+    saveSettings();
+    if (podSpectrum) podSpectrum.setParams();
+  });
+
+  const specInt = [
+    ['s-spec-intb', 'specIntBass', 's-spec-intb-v'],
+    ['s-spec-intm', 'specIntMid', 's-spec-intm-v'],
+    ['s-spec-inth', 'specIntHigh', 's-spec-inth-v']
+  ];
+  for (const [inp, key, out] of specInt) {
+    $(inp).addEventListener('input', (e) => {
+      settings[key] = Number(e.target.value);
+      $(out).textContent = Math.round(settings[key] * 100) + '%';
+      saveSettings();
+      if (podSpectrum) podSpectrum.setParams();
+    });
+  }
+
+  $('s-spec-enabled').addEventListener('change', (e) => {
+    settings.specEnabled = e.target.checked;
+    saveSettings();
+    if (podSpectrum) podSpectrum.setParams();
+    toast(settings.specEnabled ? 'Спектрограф включён' : 'Спектрограф скрыт');
+  });
+
   // Служебное
   $('s-cache').addEventListener('input', (e) => {
     const mb = Number(e.target.value);
@@ -3049,9 +3561,15 @@ function bindSettingsUI() {
 
   $('s-cache-clear').addEventListener('click', async () => {
     const res = await ipcRenderer.invoke('cache:clear');
-    if (res && res.success) toast(`Кэш очищен (удалено: ${res.data && res.data.count || 0})`);
-    else toast('Не удалось очистить кэш');
-    localHits.clear(); //Скачать файлы больше нет — кэш-хиты непинную очистить
+    if (res && res.success) {
+      const n = (res.data && res.data.count) || 0;
+      toast(n ? `Кэш очищен (удалено: ${n})` : 'Кэш очищен');
+    } else {
+      toast('Не удалось очистить кэш');
+    }
+    // Ссылки на file:// больше не действительны — сбрасываем запомненные хиты,
+    // иначе плеер попробует открыть уже удалённый файл.
+    localHits.clear();
     refreshCacheStats();
   });
 
@@ -3078,6 +3596,7 @@ function bindSettingsUI() {
     settings = Object.assign({}, DEFAULT_SETTINGS);
     saveSettings();
     applyFx();
+    if (podSpectrum) podSpectrum.setParams();
     ipcRenderer.invoke('cache:limit', { bytes: settings.cacheLimitMB * 1048576 }).catch(() => {});
     fillSettingsUI();
     toast('Настройки сброшены');
@@ -3478,6 +3997,9 @@ seekBar.addEventListener('input', () => {
 seekBar.addEventListener('change', () => {
   if (audio.duration) audio.currentTime = (seekBar.value / 1000) * audio.duration;
   isSeeking = false;
+  // Перемотка посреди гашения — отменяем переход: кривая догорела бы «мимо»
+  // новой позиции и оставила тишину
+  if (cf.blend && cf.fadeOut) cfCleanup();
 });
 
 audio.addEventListener('timeupdate', () => {
@@ -3491,11 +4013,6 @@ audio.addEventListener('timeupdate', () => {
 
 function applyVolume() {
   audio.volume = Number(volumeBar.value);
-  // Теневой хвост кроссфейда слышен вне графа EQ — держим его на той же громкости
-  if (cf.audio2) {
-    cf.audio2.volume = audio.volume;
-    cf.audio2.muted = audio.muted;
-  }
   const muted = audio.muted || audio.volume === 0;
   btnMute.textContent = muted ? '🔇' : audio.volume < 0.5 ? '🔉' : '🔊';
   btnMute.setAttribute('aria-label', audio.muted ? 'Включить звук' : 'Выключить звук');
@@ -3519,6 +4036,77 @@ function restoreSettings() {
   setShuffle(localStorage.getItem('shuffle') === '1');
   setRepeat(localStorage.getItem('repeat') || 'off');
   restoreEq();
+}
+
+// ---------------------------------------------------------------- Последнее состояние
+
+// При запуске приложение показывает последний трек в нижней панели и
+// продолжит его с сохранённого места по нажатию play. Полное состояние
+// (очередь + позиция сохраняются в localStorage) пишется на смене трека,
+// паузе и перемотке; позиция внутри трека — отдельным коротким ключом
+// каждые 4 секунды во время игры. Восстановление не запускает звук само.
+
+const PLAYBACK_KEY = 'nk.playback.v1';
+const PLAYBACK_SEEK_KEY = 'nk.playback.seek.v1';
+
+let playbackSaveTimer = null;
+
+function schedulePlaybackSave() {
+  clearTimeout(playbackSaveTimer);
+  playbackSaveTimer = setTimeout(savePlaybackNow, 700);
+}
+
+// Ссылки к моменту записи устаревают — их не сохраняем, при воспроизведении
+// ссылки разрешаются заново
+function stripTrackForSave(t) {
+  const out = { ...t };
+  delete out.url; delete out.urlTime; delete out.urls;
+  delete out.stream; delete out.streamExpires;
+  return out;
+}
+
+function savePlaybackNow() {
+  clearTimeout(playbackSaveTimer);
+  playbackSaveTimer = null;
+  try {
+    if (!state.current || !state.queue.length) return;
+    const seek = Math.max(0, audio.currentTime || 0);
+    const data = {
+      v: 1,
+      queue: state.queue.map(stripTrackForSave),
+      order: state.order,
+      pos: state.pos
+    };
+    localStorage.setItem(PLAYBACK_SEEK_KEY, String(seek));
+    localStorage.setItem(PLAYBACK_KEY, JSON.stringify(data));
+  } catch (e) { /* закрытие/переполнение квоты — не критично */ }
+}
+
+function restorePlayback() {
+  let data = null;
+  try { data = JSON.parse(localStorage.getItem(PLAYBACK_KEY) || 'null'); } catch (e) { /* ок */ }
+  if (!data || !Array.isArray(data.queue)) return;
+
+  const queue = data.queue.filter((t) => t && typeof t === 'object' && (t.local || t.id != null));
+  if (!queue.length) return;
+
+  let order = Array.isArray(data.order)
+    ? data.order.filter((i) => Number.isInteger(i) && i >= 0 && i < queue.length)
+    : [];
+  if (order.length !== queue.length) order = [...Array(queue.length).keys()];
+
+  let pos = Number.isInteger(data.pos) ? data.pos : 0;
+  if (pos < 0 || pos >= order.length) pos = 0;
+
+  state.queue = queue;
+  state.order = order;
+  state.pos = pos;
+  state.current = queue[order[pos]] || null;
+  state.resumeSeek = Math.max(0, Number(localStorage.getItem(PLAYBACK_SEEK_KEY)) || 0);
+  updateNowPlaying();
+  updateQueueNav();
+  highlightCurrent();
+  updateHomePlay();
 }
 
 // ---------------------------------------------------------------- Горячие клавиши
@@ -3627,676 +4215,5 @@ function pluralTracks(n) {
   return `${n} ${word}`;
 }
 
-// Только для отладки из тестовых скриптов (расширяется в конце модуля умного режима)
-
-// ---------------------------------------------------------------- Умный режим (тестовая версия)
-//
-// Рекомендации на основе своей библиотеки + локальных файлов. Никаких серверов:
-// пользовательская статистика прослушиваний копится в localStorage по ключу
-// «артист + название» (устойчивее VK-id), предпочтения — ручными лайками/дизлайками.
-// Скоринг v1: фавориты + распад интереса (30 дней) + штрафы за скип/усталость
-// артиста + доля «нового» + реакция на время суток. Ограничение разнообразия
-// (не больше N треков одного артиста подряд) поверх скоринга.
-
-const SMART_KEY = 'nk.smart.v1';
-const SMART_STATS_KEY = 'nk.smart.stats.v1';
-const SMART_HALF = 30 * 864e5; // период полураспада интереса (30 дней)
-const SMART_CD = [0, 9e5, 36e5, 864e5]; // кулдаун артиста: нет / 15 мин / 1 ч / день
-
-function smartDefaults() {
-  return {
-    artists: [],       // любимые артисты (как в библиотеке)
-    favTracks: [],     // любимые треки {artist, title}
-    disliked: [],      // непонравившиеся треки {artist, title}
-    hiddenArtists: [], // исключённые артисты (строки)
-    knobs: { explore: 20, cap: 2, cooldown: 1, tod: true, hideDisliked: false }
-  };
-}
-
-let smart = smartDefaults();
-try {
-  const saved = JSON.parse(localStorage.getItem(SMART_KEY) || 'null');
-  if (saved && typeof saved === 'object') Object.assign(smart, saved);
-} catch (e) { /* ок — работаем на дефолтах */ }
-smart.knobs = Object.assign(smartDefaults().knobs, smart.knobs || {});
-['artists', 'favTracks', 'disliked', 'hiddenArtists'].forEach((k) => {
-  if (!Array.isArray(smart[k])) smart[k] = [];
-});
-
-function smartSave() {
-  try { localStorage.setItem(SMART_KEY, JSON.stringify(smart)); } catch (e) { /* ок */ }
-}
-
-// --- Статистика прослушиваний/скипов ---
-let smartStats = null;
-try { smartStats = JSON.parse(localStorage.getItem(SMART_STATS_KEY) || 'null'); } catch (e) { smartStats = null; }
-if (!smartStats || typeof smartStats !== 'object' || !smartStats.tr || !smartStats.ar) {
-  smartStats = { tr: {}, ar: {} };
-}
-
-let smartStatsTimer = null;
-function smartStatsSave() {
-  clearTimeout(smartStatsTimer);
-  smartStatsTimer = setTimeout(() => {
-    try { localStorage.setItem(SMART_STATS_KEY, JSON.stringify(smartStats)); } catch (e) { /* ок */ }
-  }, 1500);
-}
-
-// Ключ трека: нормализуем артиста как sameArtist (feat./ft./&/запятая),
-// иначе одна песня под разными вариантами имени считается разными треками
-// — и вылезает «по кругу через один»
-function nameKey(t) {
-  const a = normalizeArtist(t.artist);
-  const cut = a.split(' feat')[0].split(' ft ')[0].split(' & ')[0].split(',')[0].trim();
-  return `${cut}\u0000${String(t.title || '').toLowerCase().trim()}`;
-}
-function prefKey(x) { return `${normalizeArtist(x.artist)}\u0000${String(x.title || '').toLowerCase().trim()}`; }
-
-function smartTrackStat(k) {
-  return smartStats.tr[k] || (smartStats.tr[k] = { p: 0, s: 0, ts: 0 });
-}
-function smartArtistStat(n) {
-  return smartStats.ar[n] || (smartStats.ar[n] = { p: 0, s: 0, ts: 0, tod: [0, 0, 0, 0, 0, 0, 0, 0] });
-}
-
-function smartFav(track) {
-  if (!track) return 0;
-  const k = nameKey(track);
-  if (smart.favTracks.some((x) => prefKey(x) === k)) return 1;
-  if (smart.disliked.some((x) => prefKey(x) === k)) return -1;
-  return 0;
-}
-function smartIsFavArtist(track) {
-  const n = normalizeArtist(track.artist);
-  if (!n) return false;
-  return smart.artists.some((a) => normalizeArtist(a) === n || sameArtist(a, track.artist));
-}
-function smartHiddenArtist(track) {
-  const n = normalizeArtist(track.artist);
-  if (!n) return false;
-  return smart.hiddenArtists.some((h) => normalizeArtist(h) === n);
-}
-
-function smartToggleFav(track, on) {
-  const k = nameKey(track);
-  smart.favTracks = smart.favTracks.filter((x) => prefKey(x) !== k);
-  if (on) {
-    smart.favTracks.unshift({ artist: track.artist, title: track.title });
-    smart.disliked = smart.disliked.filter((x) => prefKey(x) !== k);
-  }
-  smartSave();
-}
-
-function smartToggleDislike(track, on) {
-  const k = nameKey(track);
-  smart.disliked = smart.disliked.filter((x) => prefKey(x) !== k);
-  if (on) {
-    smart.disliked.unshift({ artist: track.artist, title: track.title });
-    smart.favTracks = smart.favTracks.filter((x) => prefKey(x) !== k);
-  }
-  smartSave();
-}
-
-function smartTodBucket() {
-  return Math.floor((new Date().getHours()) / 3); // 0..7
-}
-
-// --- Сессии прослушивания: закрытие при переходе на следующий трек/конце ---
-let smartSession = null;
-let smartPlayed = new Set(); // ключи отыгранных в этой сессии умного режима треков
-
-function smartOpenSession(track) {
-  smartSession = track ? {
-    k: nameKey(track),
-    artist: normalizeArtist(track.artist),
-    bucket: smartTodBucket()
-  } : null;
-}
-
-function smartFinishSession(ended) {
-  const s = smartSession;
-  smartSession = null;
-  if (!s) return;
-  const dur = isFinite(audio.duration) && audio.duration > 1 ? audio.duration : 0;
-  const pos = ended ? dur : (audio.currentTime || 0);
-  if (!dur || pos <= 1) return; // неслышно игравший трек статистику не трогает
-  const frac = pos / dur;
-  const okPlay = ended || frac >= 0.6;    // дослушал до конца или больше 60%
-  const earlySkip = !ended && frac < 0.35; // ранний скип — сильный минус
-  const tr = smartTrackStat(s.k);
-  const ar = s.artist ? smartArtistStat(s.artist) : null;
-  if (ar) { ar.ts = Date.now(); tr.ts = ar.ts; }
-  if (okPlay) {
-    tr.p += 1;
-    if (ar) { ar.p += 1; ar.tod[s.bucket] += 1; }
-  } else if (earlySkip) {
-    tr.s += 1;
-    if (ar) ar.s += 1;
-  }
-  // Трек отыгран (полностью или частично) — сессия умного режима его не
-  // переподбирает, пока не начнётся новая
-  smartPlayed.add(s.k);
-  smartStatsSave();
-}
-
-// --- Скоринг ---
-function smartScore(t, now, bucket) {
-  const k = nameKey(t);
-  const tr = smartStats.tr[k];
-  const n = normalizeArtist(t.artist);
-  const ar = n ? smartStats.ar[n] : null;
-
-  let sc = 1;
-  const fav = smartFav(t);
-  if (fav === 1) sc += 3.2;                          // ручной лайк трека
-  if (smartIsFavArtist(t)) sc += 2.6;                // ручной выбор артиста
-
-  // Распад интереса: свежие прослушивания весят больше давних
-  const trW = tr ? tr.p * Math.exp(-Math.max(0, now - (tr.ts || now)) / SMART_HALF) : 0;
-  const arW = ar ? ar.p * Math.exp(-Math.max(0, now - (ar.ts || now)) / SMART_HALF) : 0;
-  sc += Math.min(2.2, trW * 1.1) + Math.min(1.6, arW * 0.8);
-
-  // Усталость артиста: играл недавно — мягкий минус (не блок)
-  const cd = SMART_CD[smart.knobs.cooldown] || 0;
-  if (ar && ar.ts && cd && now - ar.ts < cd) sc -= 4;
-
-  // Скип-рейсы
-  const trSkip = tr ? tr.s / Math.max(1, tr.p + tr.s) : 0;
-  const arSkip = ar ? ar.s / Math.max(1, ar.p + ar.s) : 0;
-  sc -= trSkip * 2.6 + arSkip * 1.4;
-
-  // Новичок: не игрался — бонус по ползунку «новое»
-  if (!tr) sc += 0.6 + smart.knobs.explore / 30;
-
-  // Время суток: артисты, которых обычно слушают в этот бакет часов — чуть выше
-  if (smart.knobs.tod && ar && ar.tod) {
-    const sum = ar.tod.reduce((acc, x) => acc + x, 0) || 1;
-    sc += Math.min(0.8, (ar.tod[bucket] / sum) * 2.4);
-  }
-
-  return sc + Math.random() * 0.55; // лёгкий джиттер против монотонных повторов
-}
-
-// --- Пул доступных треков (минус дизлайки и исключённые артисты).
-// Дубли ВК (одна песня под разными id) чистим всегда по ключу «артист+название»
-function smartPool(excludeKeys) {
-  const src = (state.myTracks && state.myTracks.length) ? state.myTracks : (state.localTracks || []);
-  const seen = new Set();
-  const out = [];
-  for (const t of src) {
-    if (!(t.local || t.url || t.stream || t.reloadId)) continue;
-    if (smartHiddenArtist(t) || smartFav(t) === -1) continue;
-    const k = nameKey(t);
-    if (seen.has(k)) continue;
-    seen.add(k);
-    if (excludeKeys && excludeKeys.has(k)) continue;
-    out.push(t);
-  }
-  return out;
-}
-
-// --- Сборка умной очереди ---
-function smartBuildQueue(seed, excludeKeys) {
-  const now = Date.now();
-  const bucket = smartTodBucket();
-  const pool = smartPool(excludeKeys);
-  const want = Math.min(pool.length, 40);
-  if (!want) return [];
-
-  const scored = pool
-    .map((t) => ({ t, k: nameKey(t), sc: smartScore(t, now, bucket) }))
-    .sort((x, y) => y.sc - x.sc);
-
-  // Доля «нового»: каждый N-й слот — обязательно неигранный трек
-  const novelEvery = smart.knobs.explore >= 5 ? Math.max(2, Math.round(100 / smart.knobs.explore)) : 0;
-  const unplayed = scored.filter((x) => !smartStats.tr[x.k]);
-  let up = 0;
-
-  const out = [];
-  const recentArtists = [];
-  const cap = Math.max(1, Math.min(4, smart.knobs.cap || 2));
-  const recentWindow = Math.max(1, cap - 1);
-
-  // Seed — если передан трек (например, играющий сейчас), он играет первым
-  if (seed) {
-    const sk = nameKey(seed);
-    const at = scored.findIndex((x) => x.k === sk);
-    if (at !== -1) {
-      out.push(scored[at].t);
-      recentArtists.push(normalizeArtist(scored[at].t.artist));
-      scored.splice(at, 1);
-    }
-  }
-
-  let guard = 0;
-  while (out.length < want && guard++ < want * 4) {
-    let item = null;
-
-    // Слот «нового»: неигранный трек без конфликта артиста
-    const novelSlot = novelEvery && out.length >= 1 && out.length % novelEvery === (novelEvery - 1);
-    if (novelSlot) {
-      let j = up;
-      while (j < unplayed.length) {
-        const cand = unplayed[j];
-        if (!recentArtists.slice(-recentWindow).includes(normalizeArtist(cand.t.artist))) {
-          item = cand;
-          up = j + 1;
-          break;
-        }
-        j++;
-      }
-    }
-
-    // Обычный проход по скорингу
-    if (!item) {
-      for (let j = 0; j < scored.length; j++) {
-        const cand = scored[j];
-        if (recentArtists.slice(-recentWindow).includes(normalizeArtist(cand.t.artist))) continue;
-        item = cand;
-        break;
-      }
-    }
-    if (!item) break;
-
-    scored.splice(scored.indexOf(item), 1);
-    out.push(item.t);
-    recentArtists.push(normalizeArtist(item.t.artist));
-  }
-  return out;
-}
-
-// --- Старт умного режима кнопкой NK-Wave ---
-async function startSmartQueue(seed) {
-  if (!state.myTracks) {
-    try { await loadMyTracks(); } catch (e) { state.myTracks = null; }
-  }
-  if (!state.myTracks || !state.myTracks.length) {
-    try { await loadLocalTracks(); } catch (e) { state.localTracks = null; }
-  }
-  // Новая сессия подбора отыгранные треки снова допускает в ротацию
-  smartPlayed = new Set();
-  const list = smartBuildQueue(seed, null);
-  if (!list.length) {
-    toast('Для умного режима нужна библиотека — войдите в ВК или добавьте свои файлы');
-    return false;
-  }
-
-  const cold = !smart.artists.length && !Object.keys(smartStats.tr).length;
-  smartSession = null;
-  startQueue(list, 0);
-  state.smart = true; // startQueue сбрасывает smart — ставим после него
-  console.log('[smart] пул: ' + smartPool(null).length + ', очередь: ' + list.length);
-  toast(cold
-    ? 'Умный режим: смешал библиотеку — отметьте любимых артистов в настройках'
-    : 'Умный режим включён');
-  if (cold) openSmartSettings();
-  return true;
-}
-
-// Очередь кончилась (докрутили до конца или скипами) — нарастить продолжение.
-// Исключаем отыгранное за эту сессию и ещё не отыгранную часть очереди:
-// повторы возможны только после того, как пул исчерпан
-function smartExtendQueue() {
-  // Не переподбираем отыгранное в этой сессии и ещё не отыгранную часть очереди
-  const excludeKeys = new Set(smartPlayed);
-  for (let i = state.pos + 1; i < state.order.length; i++) {
-    const t = state.queue[state.order[i]];
-    if (t) excludeKeys.add(nameKey(t));
-  }
-  let list = smartBuildQueue(null, excludeKeys);
-  let rotated = false;
-
-  if (!list.length) {
-    // Пул этой сессии исчерпан — режим бесконечный: начинаем новый круг.
-    // Сразу не повторяем только то, что игралось в последние ~2 кулдауна
-    const nowMs = Date.now();
-    const windowMs = (SMART_CD[smart.knobs.cooldown] || 9e5) * 2;
-    const soft = new Set();
-    for (const k of smartPlayed) {
-      const st = smartStats.tr[k];
-      if (st && st.ts && nowMs - st.ts < windowMs) soft.add(k);
-    }
-    list = smartBuildQueue(null, soft);
-    rotated = true;
-  }
-  if (!list.length) {
-    // Совсем маленькая библиотека — честный круг без exclusions
-    list = smartBuildQueue(null, null);
-    rotated = true;
-  }
-  if (!list.length) {
-    state.smart = false;
-    toast('Умный режим: в библиотеке нет доступных треков');
-    return;
-  }
-  if (rotated) {
-    // Новый круг — учёт отыгранного обнуляем, иначе замкнёмся
-    smartPlayed = new Set();
-    toast('Умный режим: круг прошёл — начинаю заново');
-  }
-  const base = state.queue.length;
-  for (const t of list) {
-    state.queue.push({ ...t });
-    state.order.push(base + state.queue.length - 1);
-  }
-  updateQueueNav();
-  if (state.view.type === 'queue') renderTracks();
-  if (!rotated) toast('Умный режим: подобрал продолжение');
-}
-
-// --- Настройки умного режима ---
-const smartBackdrop = $('smart-backdrop');
-
-function openSmartSettings() {
-  smartBackdrop.classList.remove('hidden');
-  // Библиотека для поиска артистов/треков: подтянуть, если ещё не загружена
-  if (!state.myTracks) {
-    loadMyTracks().then(() => { smartRenderAll(); }).catch(() => { smartRenderAll(); });
-  }
-  smartRenderAll();
-}
-
-function smartRenderAll() {
-  smartRenderArtists();
-  smartRenderTracksTab();
-  smartRenderDislikes();
-  smartRenderKnobs();
-}
-
-$('smart-close').addEventListener('click', () => smartBackdrop.classList.add('hidden'));
-$('smart-done').addEventListener('click', () => smartBackdrop.classList.add('hidden'));
-smartBackdrop.addEventListener('click', (e) => {
-  if (e.target === smartBackdrop) smartBackdrop.classList.add('hidden');
-});
-smartBackdrop.querySelectorAll('.smart-tab').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    smartBackdrop.querySelectorAll('.smart-tab').forEach((b) => b.classList.toggle('on', b === btn));
-    smartBackdrop.querySelectorAll('.smart-pane').forEach((p) => {
-      p.classList.toggle('on', p.id === `smart-pane-${btn.dataset.tab}`);
-    });
-  });
-});
-
-// --- Вкладка «Артисты» ---
-let smartArtistsCache = null;
-function smartLibArtists() {
-  const tag = `${state.myTracks ? state.myTracks.length : 'x'}|${state.localTracks ? state.localTracks.length : 'x'}`;
-  if (smartArtistsCache && smartArtistsCache.tag === tag) return smartArtistsCache.map;
-  const map = new Map(); // нормализованное -> исходное имя
-  const push = (name) => {
-    const n = normalizeArtist(name);
-    if (!n || map.has(n)) return;
-    map.set(n, name);
-  };
-  (state.myTracks || []).forEach((t) => push(t.artist));
-  (state.localTracks || []).forEach((t) => push(t.artist));
-  smartArtistsCache = { tag, map };
-  return map;
-}
-
-function smartRenderArtists() {
-  const chips = $('smart-artists-chips');
-  chips.textContent = '';
-  for (const name of smart.artists) {
-    const chip = document.createElement('span');
-    chip.className = 'chip';
-    const label = document.createElement('span');
-    label.textContent = name;
-    const x = document.createElement('button');
-    x.textContent = '✕';
-    x.title = 'Убрать из любимых';
-    x.addEventListener('click', () => {
-      smart.artists = smart.artists.filter((a) => normalizeArtist(a) !== normalizeArtist(name));
-      smartSave();
-      smartArtistsCache = null;
-      smartRenderArtists();
-    });
-    chip.append(label, x);
-    chips.appendChild(chip);
-  }
-
-  const list = $('smart-artists-list');
-  list.textContent = '';
-  const q = ($('smart-artists-search').value || '').trim().toLowerCase();
-  const map = smartLibArtists();
-  $('smart-artists-count').textContent =
-    `Любимых артистов: ${smart.artists.length} · в библиотеке: ${map.size}`;
-  const names = [...map.values()].filter((n) => !q || n.toLowerCase().includes(q)).slice(0, 60);
-  for (const name of names) {
-    const row = document.createElement('div');
-    row.className = 'smart-row';
-    const nm = document.createElement('span');
-    nm.className = 'nm';
-    nm.textContent = name;
-    const isFav = smart.artists.some((a) => normalizeArtist(a) === normalizeArtist(name));
-    const act = document.createElement('button');
-    act.className = 'track-act' + (isFav ? ' like on' : '');
-    act.textContent = isFav ? '♥' : '+';
-    act.title = isFav ? 'Убрать из любимых' : 'Добавить в любимые';
-    act.addEventListener('click', () => {
-      if (isFav) {
-        smart.artists = smart.artists.filter((a) => normalizeArtist(a) !== normalizeArtist(name));
-      } else if (smart.artists.length >= 40) {
-        toast('Многовато: до 40 любимых артистов');
-        return;
-      } else {
-        smart.artists.push(name);
-      }
-      smartSave();
-      smartRenderArtists();
-    });
-    row.append(nm, act);
-    list.appendChild(row);
-  }
-  if (!names.length) {
-    const ph = document.createElement('div');
-    ph.className = 'smart-note';
-    ph.textContent = state.myTracks ? 'Ничего не нашлось по запросу' : 'Библиотека ещё не загружена — откройте «Мою музыку» или включите умный режим';
-    list.appendChild(ph);
-  }
-}
-$('smart-artists-search').addEventListener('input', smartRenderArtists);
-
-// --- Вкладка «Треки» ---
-function smartRenderTracksTab() {
-  const list = $('smart-tracks-list');
-  list.textContent = '';
-  const src = state.myTracks || state.localTracks || [];
-  const q = ($('smart-tracks-search').value || '').trim().toLowerCase();
-  const rows = [];
-  const seen = new Set();
-
-  if (q) {
-    for (const t of src) {
-      if (rows.length >= 60) break;
-      if (!`${t.artist} ${t.title}`.toLowerCase().includes(q)) continue;
-      const k = nameKey(t);
-      if (seen.has(k)) continue;
-      seen.add(k);
-      rows.push(t);
-    }
-    $('smart-tracks-count').textContent = `Варианты по запросу: ${rows.length}`;
-  } else {
-    for (const t of src) {
-      if (smartFav(t) !== 1) continue;
-      const k = nameKey(t);
-      if (seen.has(k)) continue;
-      seen.add(k);
-      rows.push(t);
-    }
-    $('smart-tracks-count').textContent = `Любимых треков: ${rows.length}`;
-  }
-
-  for (const t of rows) {
-    const row = document.createElement('div');
-    row.className = 'smart-row';
-    const nm = document.createElement('span');
-    nm.className = 'nm';
-    const isFav = smartFav(t) === 1;
-    const title1 = document.createElement('div');
-    title1.textContent = t.title;
-    const title2 = document.createElement('small');
-    title2.textContent = t.artist;
-    nm.append(title1, title2);
-
-    const act = document.createElement('button');
-    act.className = 'track-act' + (isFav ? ' like on' : '');
-    act.textContent = q ? (isFav ? '✓' : '♥') : '✕';
-    act.title = q ? (isFav ? 'Уже в любимых — убрать?' : 'Добавить в любимые') : 'Убрать из любимых';
-    act.addEventListener('click', () => {
-      smartToggleFav(t, q ? !isFav : false);
-      smartRenderTracksTab();
-    });
-    row.append(nm, act);
-    list.appendChild(row);
-  }
-  if (!rows.length && q) {
-    const ph = document.createElement('div');
-    ph.className = 'smart-note';
-    ph.textContent = state.myTracks || state.localTracks ? 'Ничего не нашлось' : 'Библиотека ещё не загружена';
-    list.appendChild(ph);
-  }
-}
-$('smart-tracks-search').addEventListener('input', smartRenderTracksTab);
-
-// --- Вкладка «Непонравилось» ---
-function smartRenderDislikes() {
-  const list = $('smart-dislikes-list');
-  list.textContent = '';
-  const src = state.myTracks || state.localTracks || [];
-  const seen = new Set();
-  let n = 0;
-  for (const t of src) {
-    if (smartFav(t) !== -1) continue;
-    const k = nameKey(t);
-    if (seen.has(k)) continue;
-    seen.add(k);
-    n++;
-    const row = document.createElement('div');
-    row.className = 'smart-row';
-    const nm = document.createElement('span');
-    nm.className = 'nm';
-    const t1 = document.createElement('div');
-    t1.textContent = t.title;
-    const t2 = document.createElement('small');
-    t2.textContent = t.artist;
-    nm.append(t1, t2);
-
-    const back = document.createElement('button');
-    back.className = 'track-act';
-    back.textContent = '↩';
-    back.title = 'Вернуть в умный режим';
-    back.addEventListener('click', () => {
-      smartToggleDislike(t, false);
-      smartRenderDislikes();
-    });
-    const ban = document.createElement('button');
-    ban.className = 'track-act danger';
-    ban.textContent = '🚫';
-    ban.title = 'Исключить исполнителя целиком';
-    ban.addEventListener('click', () => {
-      const nmArtist = String(t.artist || '').trim();
-      if (!nmArtist) return;
-      if (!smart.hiddenArtists.some((h) => normalizeArtist(h) === normalizeArtist(nmArtist))) {
-        smart.hiddenArtists.push(nmArtist);
-      }
-      smartSave();
-      smartRenderDislikes();
-      toast(`«${nmArtist}» исключён из умного режима`);
-    });
-    row.append(nm, back, ban);
-    list.appendChild(row);
-  }
-  if (!n) {
-    const ph = document.createElement('div');
-    ph.className = 'smart-note';
-    ph.textContent = 'Пока ничего не помечено «не нравится»';
-    list.appendChild(ph);
-  }
-
-  const chips = $('smart-hidden-chips');
-  chips.textContent = '';
-  for (const name of smart.hiddenArtists) {
-    const chip = document.createElement('span');
-    chip.className = 'chip';
-    const label = document.createElement('span');
-    label.textContent = name;
-    const x = document.createElement('button');
-    x.textContent = '✕';
-    x.title = 'Вернуть исполнителя';
-    x.addEventListener('click', () => {
-      smart.hiddenArtists = smart.hiddenArtists.filter((h) => normalizeArtist(h) !== normalizeArtist(name));
-      smartSave();
-      smartRenderDislikes();
-    });
-    chip.append(label, x);
-    chips.appendChild(chip);
-  }
-  if (!smart.hiddenArtists.length) {
-    const ph = document.createElement('div');
-    ph.className = 'smart-note';
-    ph.style.marginTop = '6px';
-    ph.textContent = 'Исключённых артистов нет';
-    chips.appendChild(ph);
-  }
-}
-
-// --- Вкладка «Подбор» (ручки) ---
-const SMART_COOL = ['Нет', '15 мин', '1 ч', 'День'];
-
-function smartRenderKnobs() {
-  $('s-explore').value = smart.knobs.explore;
-  $('s-explore-v').textContent = smart.knobs.explore + '%';
-  $('s-cap').value = smart.knobs.cap;
-  $('s-cap-v').textContent = String(smart.knobs.cap);
-  $('s-cooldown').value = smart.knobs.cooldown;
-  $('s-cooldown-v').textContent = SMART_COOL[smart.knobs.cooldown] || 'Нет';
-  $('s-tod').checked = !!smart.knobs.tod;
-  $('s-hide-disliked').checked = !!smart.knobs.hideDisliked;
-
-  let plays = 0, skips = 0;
-  for (const k in smartStats.tr) { plays += smartStats.tr[k].p; skips += smartStats.tr[k].s; }
-  const poolN = smartPool(null).length;
-  $('smart-stats-info').textContent =
-    `Прослушиваний: ${plays} · Скипов: ${skips} · Пул: ${poolN}`;
-}
-
-$('s-explore').addEventListener('input', (e) => {
-  smart.knobs.explore = Number(e.target.value);
-  $('s-explore-v').textContent = smart.knobs.explore + '%';
-  smartSave();
-});
-$('s-cap').addEventListener('input', (e) => {
-  smart.knobs.cap = Number(e.target.value);
-  $('s-cap-v').textContent = String(smart.knobs.cap);
-  smartSave();
-});
-$('s-cooldown').addEventListener('input', (e) => {
-  smart.knobs.cooldown = Number(e.target.value);
-  $('s-cooldown-v').textContent = SMART_COOL[smart.knobs.cooldown] || 'Нет';
-  smartSave();
-});
-$('s-tod').addEventListener('change', (e) => {
-  smart.knobs.tod = e.target.checked;
-  smartSave();
-});
-$('s-hide-disliked').addEventListener('change', (e) => {
-  smart.knobs.hideDisliked = e.target.checked;
-  smartSave();
-  renderTracks(); // скрыть/показать дизлайки сразу
-});
-$('smart-stats-reset').addEventListener('click', () => {
-  smartStats = { tr: {}, ar: {} };
-  try { localStorage.removeItem(SMART_STATS_KEY); } catch (e) { /* ок */ }
-  smartRenderKnobs();
-  toast('Статистика умного режима сброшена');
-});
-
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !smartBackdrop.classList.contains('hidden')) {
-    smartBackdrop.classList.add('hidden');
-  }
-});
-
 // Расширенный отладочный доступ из консоли
-window.__nk = { state, eq, audio, ensureEqGraph, smart, smartStats, smartBuildQueue, smartScore };
+window.__nk = { state, eq, audio, ensureEqGraph };

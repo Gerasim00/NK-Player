@@ -104,8 +104,7 @@ function buildActivity(p) {
     type: 2,                                  // 2 = «Слушает»
     details: clamp(p.artist, 'NK Player'),
     state: clamp(p.title, 'Слушает музыку'),
-    instance: false,
-    buttons: [{ label: 'Слушать в ВК', url: 'https://vk.ru/audio' }]
+    instance: false
   };
 
   // Обложка альбома, если ВК отдал публичную ссылку

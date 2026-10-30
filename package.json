@@ -1,7 +1,7 @@
 {
   "name": "nk-player",
   "productName": "NK Player",
-  "version": "1.5.2",
+  "version": "1.5.0",
   "description": "NK Player вЂ” РјСѓР·С‹РєР°Р»СЊРЅС‹Р№ РїР»РµРµСЂ РґР»СЏ Р’РљРѕРЅС‚Р°РєС‚Рµ",
   "author": {
     "name": "NK Player"
@@ -40,10 +40,13 @@
       "library.js",
       "updates.js",
       "discord-rpc.js",
+      "feedback.js",
+      "feedback.key",
       "index.html",
       "assets/icon.ico",
       "assets/icon.png",
       "assets/cat-sil.png",
+      "assets/holo-cat.png",
       "package.json"
     ],
     "asar": true,

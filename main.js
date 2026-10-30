@@ -10,6 +10,7 @@ const library = require('./library');
 const updates = require('./updates');
 const discord = require('./discord-rpc');
 const songCache = require('./song-cache');
+const feedback = require('./feedback');
 
 const IS_DEV = !app.isPackaged;
 
@@ -35,6 +36,11 @@ function migrateOldProfile() {
 
 migrateOldProfile();
 app.setAppUserModelId('ru.nk.player');
+
+// Chromium кэширует те же mp3, что мы и так складываем в song-cache: на диске
+// они лежали дважды, а слайдер в настройках видел только нашу копию.
+// Свой кэш у нас есть, поэтому сетевой держим маленьким.
+app.commandLine.appendSwitch('disk-cache-size', String(64 * 1024 * 1024));
 
 // ---------------------------------------------------------------- CDN ВК
 
@@ -73,9 +79,70 @@ function setupVkCdnHeaders() {
   // и сегменты, даже если сам CDN отвечает нормально
   ses.webRequest.onHeadersReceived({ urls: VK_CDN_FILTERS }, (details, callback) => {
     const h = details.responseHeaders;
-    if (h) h['Access-Control-Allow-Origin'] = ['*'];
+    if (h) {
+      h['Access-Control-Allow-Origin'] = ['*'];
+      // Аудио не кэшируем в Chromium: у нас свой кэш на диске, а лишняя
+      // копия в Cache_Data занимала столько же и слайдер её не видел.
+      if (isMediaResponse(details)) {
+        h['Cache-Control'] = ['no-store'];
+        delete h['cache-control'];
+        delete h['ETag'];
+        delete h['etag'];
+      }
+    }
     callback(h ? { responseHeaders: h } : {});
   });
+}
+
+// Аудио-ответы: тип запроса от медиастека либо расширение в пути
+function isMediaResponse(details) {
+  if (details.resourceType === 'media') return true;
+  try {
+    const p = new URL(details.url).pathname.toLowerCase();
+    return /\.(mp3|m4a|aac|mp4|ogg|opus|flac|wav|m3u8|ts)$/.test(p);
+  } catch (e) {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------- Сетевой кэш
+
+// Папка Cache профиля: сюда Chromium складывает ответы, в том числе аудио.
+function netCacheDir() {
+  return path.join(app.getPath('userData'), 'Cache');
+}
+
+function dirBytes(dir) {
+  let total = 0;
+  let list;
+  try { list = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return 0; }
+  for (const e of list) {
+    const full = path.join(dir, e.name);
+    try {
+      total += e.isDirectory() ? dirBytes(full) : fs.statSync(full).size;
+    } catch (err) { /* файл занят — пропустим */ }
+  }
+  return total;
+}
+
+function netCacheBytes() {
+  return dirBytes(netCacheDir());
+}
+
+async function clearNetCache() {
+  try {
+    await session.defaultSession.clearCache();
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// Стартовая уборка: раздутый сетевой кэш от прошлых версий чистим один раз,
+// чтобы у тех, кто уже успел накопить сотни мегабайт, место вернулось.
+async function trimNetCacheOnStart() {
+  const NET_KEEP_BYTES = 256 * 1024 * 1024;
+  if (netCacheBytes() > NET_KEEP_BYTES) await clearNetCache();
 }
 
 let mainWindow;
@@ -131,7 +198,8 @@ app.whenReady().then(() => {
   setupVkCdnHeaders();
   localMusic.init(app.getPath('userData'));
   library.init(app.getPath('userData'));
-  songCache.init(app.getPath('userData'));
+  songCache.init(app.getPath('userData')).catch(() => {});
+  trimNetCacheOnStart().catch(() => {});
   createWindow();
   discord.start();
 });
@@ -141,8 +209,12 @@ app.on('window-all-closed', () => {
 });
 
 // Закрываем соединение с Discord до выхода, иначе процесс висит на открытом
-// named pipe и приложение не завершается.
-app.on('will-quit', () => discord.shutdown());
+// named pipe и приложение не завершается. Там же дописываем индекс кэша:
+// отложенная запись иначе потеряется.
+app.on('will-quit', () => {
+  discord.shutdown();
+  songCache.flush();
+});
 
 // ---------------------------------------------------------------- Окно
 
@@ -294,9 +366,28 @@ ipcMain.handle('cache:limit', (e, arg) => {
   }
 });
 
-ipcMain.handle('cache:clear', () => {
+ipcMain.handle('cache:clear', async () => {
   try {
-    return { success: true, data: songCache.clear() };
+    const data = songCache.clear();
+    // Рядом лежит HTTP-кэш Chromium с копиями тех же треков — чистим и его,
+    // иначе кнопка «Очистить» освобождает место только наполовину.
+    const net = await clearNetCache();
+    return { success: true, data: Object.assign({}, data, { net }) };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// Что нельзя вытеснять из кэша: текущий трек и следующие в очереди
+ipcMain.handle('cache:pin', (e, arg) => {
+  songCache.setPinned(arg && Array.isArray(arg.ids) ? arg.ids : []);
+  return { success: true };
+});
+
+// Размер сетевого кэша Chromium — он не входит в лимит слайдера
+ipcMain.handle('cache:netStats', () => {
+  try {
+    return { success: true, data: { bytes: netCacheBytes() } };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -307,6 +398,25 @@ ipcMain.handle('cache:stats', () => {
     return { success: true, data: songCache.stats() };
   } catch (err) {
     return { success: false, error: err.message };
+  }
+});
+
+// ---------------------------------------------------------------- Обратная связь
+
+// Отзыв уходит в Discord-канал разработчика. Сам webhook живёт только здесь:
+// в рендерер не отдаётся, в исходниках хранится зашифрованным (feedback.key).
+ipcMain.handle('feedback:send', async (e, payload) => {
+  try {
+    const rating = Math.round(Number(payload && payload.rating));
+    const comment = String((payload && payload.comment) || '').trim();
+    if (!Number.isInteger(Number(payload && payload.rating))) return { ok: false, error: 'Оценка должна быть целым числом от 1 до 5' };
+    if (!(rating >= 1 && rating <= 5)) return { ok: false, error: 'Оценка должна быть от 1 до 5' };
+    if (!comment) return { ok: false, error: 'Отзыв пустой' };
+    if (comment.length > feedback.MAX_COMMENT) return { ok: false, error: 'Отзыв длиннее 1200 символов' };
+    await feedback.sendFeedback({ rating, comment, version: app.getVersion() });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
   }
 });
 
@@ -434,10 +544,11 @@ ipcMain.handle('update:install', async () => {
   }
 });
 
-// Ссылки на релиз открываем в системном браузере, а не внутри приложения
+// Ссылки из интерфейса (релизы, репозиторий, Discord) открываем в системном
+// браузере, а не внутри приложения
 ipcMain.handle('app:openExternal', async (e, url) => {
   const safe = String(url || '');
-  if (!/^https:\/\/(github\.com|api\.github\.com)\//.test(safe)) {
+  if (!/^https:\/\/(github\.com|api\.github\.com|discord\.gg|discord\.com)\//.test(safe)) {
     return { success: false, error: 'Недопустимая ссылка' };
   }
   await shell.openExternal(safe);

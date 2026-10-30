@@ -219,10 +219,21 @@ function pickStream(a) {
   return { url: '', expires: 0 };
 }
 
+// Ссылки на обложки приходят в разных формах: https://…, http://… (апгрейдим
+// до https, иначе смешанный контент), протокол-относительные «//…» (дописываем
+// схему). Всё остальное — мусор, оставляем пустоту (покажется заглушка).
+function normalizeCover(s) {
+  const c = unescapeHtml(String(s || '').trim());
+  if (!c) return '';
+  if (c.startsWith('https://')) return c;
+  if (c.startsWith('http://')) return 'https://' + c.slice(7);
+  if (c.startsWith('//')) return 'https:' + c;
+  return '';
+}
+
 // Трек в ответах ВК — массив: [id, owner_id, url, title, artist, duration, ..., hashes(13), covers(14), ...]
 function parseTrack(a, userId) {
   const h = String(a[13] || '').split('/');
-  const cover = unescapeHtml(String(a[14] || '').split(',')[0] || '');
   const stream = pickStream(a);
   return {
     id: `${a[1]}_${a[0]}`,
@@ -230,7 +241,7 @@ function parseTrack(a, userId) {
     title: unescapeHtml(a[3]),
     artist: unescapeHtml(a[4]),
     duration: Number(a[5]) || 0,
-    cover: cover.startsWith('https://') ? cover : '',
+    cover: normalizeCover(String(a[14] || '').split(',')[0]),
     url: decodeVkAudioUrl(a[2], userId),
     stream: stream.url,
     streamExpires: stream.expires
@@ -266,7 +277,7 @@ function parsePlaylist(p) {
     title: stripTags(p.title),
     author: stripTags(p.author_name),
     size: Number(p.size) || 0,
-    cover: cover.startsWith('https://') ? cover : ''
+    cover: normalizeCover(p.thumb || gridCover)
   };
 }
 

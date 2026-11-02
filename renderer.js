@@ -1841,14 +1841,43 @@ function applyHomeLayout() {
   document.body.classList.toggle('stylized-mode', onStage && !card);
   if (onStage) dockCardControls();
   else undockCardControls();
+  fitHomeScale();
   if (podSpectrum) podSpectrum.setParams();
 }
+
+// Плавный масштаб сцены главной: если композиция не влезает по высоте,
+// уменьшаем её целиком через zoom (layout-уровень: текст и иконки не мылятся,
+// пропорции сохраняются). Замена ступенчатым медиазапросам.
+function fitHomeScale() {
+  const home = $('home-view');
+  if (!home || home.classList.contains('hidden')) return;
+  const card = home.classList.contains('preset-card');
+  // В «Карточке» композиция — .home-card (absolute внутри сцены), в
+  // «Стилизованном» — дети самой сцены (display: contents у .home-card)
+  const el = card ? home.querySelector('.home-card') : home.querySelector('.home-stage');
+  if (!el) return;
+  el.style.zoom = '';
+  // Капсула поднята transform'ом — он не входит в scrollHeight, а на низком
+  // окне вышвыривает её за верхний край. Считаем сдвиг частью высоты
+  const meta = el.querySelector('.card-meta');
+  const shift = meta ? Math.max(0, -new DOMMatrixReadOnly(getComputedStyle(meta).transform).m42) : 0;
+  const need = el.scrollHeight + shift;
+  const avail = home.clientHeight;
+  const z = Math.max(0.6, Math.min(1, avail / need));
+  el.style.zoom = z < 0.999 ? String(z) : '';
+}
+window.addEventListener('resize', () => {
+  fitHomeScale();
+  if (podSpectrum) podSpectrum.setParams();
+});
 
 function updateHomeCard() {
   const t = state.current;
   $('card-artist').textContent = t ? t.artist : 'Ничего не играет';
   $('card-title').textContent = t ? t.title : 'Выберите трек или нажмите ▶';
   setCover($('card-cover'), t ? (t.coverLarge || t.cover) : '', '♫');
+  // Капсула могла сменить высоту (одна/две строки) — пересчитать масштаб сцены
+  fitHomeScale();
 }
 updateHomeCard();
 

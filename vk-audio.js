@@ -200,12 +200,15 @@ async function getUserId(ses) {
 // через <audio>), затем aac, затем HLS-варианты (заголовки и CORS для CDN
 // поправлены в main.js, поэтому hls.js теперь тоже достаёт сегменты).
 // Ссылки живут до expires — протухшую отдавать бессмысленно.
+// Тип возвращаем вместе с URL: HLS-ссылка вовсе не обязана содержать «.m3u8»
+// (okcdn отдаёт её путём без расширения), и по одному URL плейлист от mp3 не
+// отличить. Раньше такой поток уходил в <audio> напрямую — трек молчал.
 function pickStream(a) {
   let flags = {};
   try {
     flags = typeof a[12] === 'string' ? JSON.parse(a[12]) : (a[12] || {});
   } catch (e) {
-    return { url: '', expires: 0 };
+    return { url: '', expires: 0, type: '' };
   }
   const streams = Array.isArray(flags.audio_streams) ? flags.audio_streams : [];
   for (const type of ['mp3', 'aac', 'hls_ts', 'hls']) {
@@ -214,9 +217,9 @@ function pickStream(a) {
     const m = stream.url.match(/[?&]expires=(\d+)/) || stream.url.match(/\/expires\/(\d+)/);
     const expires = m ? Number(m[1]) : 0;
     if (expires && expires < Date.now() + 60 * 1000) continue;
-    return { url: stream.url, expires };
+    return { url: stream.url, expires, type };
   }
-  return { url: '', expires: 0 };
+  return { url: '', expires: 0, type: '' };
 }
 
 // Ссылки на обложки приходят в разных формах: https://…, http://… (апгрейдим
@@ -231,20 +234,40 @@ function normalizeCover(s) {
   return '';
 }
 
+// Обложки приходят пачкой через запятую (обычно мелкая и крупная). Для списков
+// хватает первой, а для карточки трека на главной нужен максимум: выбираем по
+// size=ШxВ из ссылки, а если размеров нет — берём последнюю (ВК кладёт крупную
+// в конец). Подмена size= в подписанной ссылке не работает — подпись считается
+// и по параметрам, поэтому берём только то, что реально отдал ВК.
+function largestCover(raw) {
+  const list = String(raw || '').split(',').map(normalizeCover).filter(Boolean);
+  if (!list.length) return '';
+  let best = list[list.length - 1], bestSize = -1;
+  for (const url of list) {
+    const m = url.match(/[?&]size=(\d+)x(\d+)/);
+    const px = m ? Number(m[1]) * Number(m[2]) : 0;
+    if (px >= bestSize) { best = url; bestSize = px; }
+  }
+  return best;
+}
+
 // Трек в ответах ВК — массив: [id, owner_id, url, title, artist, duration, ..., hashes(13), covers(14), ...]
 function parseTrack(a, userId) {
   const h = String(a[13] || '').split('/');
   const stream = pickStream(a);
+  const cover = normalizeCover(String(a[14] || '').split(',')[0]);
   return {
     id: `${a[1]}_${a[0]}`,
     reloadId: h[2] && h[5] ? `${a[1]}_${a[0]}_${h[2]}_${h[5]}` : null,
     title: unescapeHtml(a[3]),
     artist: unescapeHtml(a[4]),
     duration: Number(a[5]) || 0,
-    cover: normalizeCover(String(a[14] || '').split(',')[0]),
+    cover,
+    coverLarge: largestCover(a[14]) || cover,
     url: decodeVkAudioUrl(a[2], userId),
     stream: stream.url,
-    streamExpires: stream.expires
+    streamExpires: stream.expires,
+    streamType: stream.type
   };
 }
 

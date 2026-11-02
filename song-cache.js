@@ -59,6 +59,16 @@ function extFromUrl(u) {
   return KNOWN_EXTS.has(ext) ? ext : 'mp3';
 }
 
+// По ссылке без расширения CDN иногда отдаёт не звук, а HLS-плейлист или
+// страницу ошибки. Такой файл сохранялся под .mp3 и трек после этого молчал
+// навсегда: плеер брал готовый «кэш» и не мог его проиграть. Отбраковываем
+// только явный мусор — на незнакомой сигнатуре оставляем как есть.
+function looksLikeAudio(buf) {
+  if (!buf || buf.length < 4) return false;
+  const head = buf.toString('latin1').trimStart();
+  return !/^(?:#EXTM3U|<|\{)/.test(head);
+}
+
 function filePath(v) {
   return path.join(cacheDir, v.file);
 }
@@ -374,6 +384,14 @@ async function runDownload(job) {
 
     const bytes = fs.statSync(part).size;
     if (bytes < 1024) throw new Error('Кач: файл пуст');
+
+    // Первые байты: по расширению судить нельзя (у okcdn его вовсе нет), а
+    // плейлист или страница ошибки, принятые за mp3, делали трек беззвучным
+    // навсегда — плеер брал готовый «кэш» и не мог его открыть.
+    const fd = fs.openSync(part, 'r');
+    const head = Buffer.alloc(12);
+    try { fs.readSync(fd, head, 0, 12, 0); } finally { fs.closeSync(fd); }
+    if (!looksLikeAudio(head)) throw new Error('Кач: это не аудио');
 
     const file = `${job.id}.${job.ext}`;
     try { fs.unlinkSync(path.join(cacheDir, file)); } catch (err) { /* ок */ }

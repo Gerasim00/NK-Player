@@ -79,6 +79,7 @@ function remove(id) {
 // Снимок трека: id, ссылка на перезапрос (reloadId), название, исполнитель,
 // длительность и обложка. Прямые ссылки не сохраняем — они живут час.
 function snapshot(track) {
+  const big = /^https:\/\//.test(track.coverLarge || '') ? track.coverLarge : '';
   return {
     id: track.id,
     reloadId: track.reloadId || null,
@@ -86,7 +87,8 @@ function snapshot(track) {
     title: track.title,
     artist: track.artist,
     duration: track.duration || 0,
-    cover: /^https:\/\//.test(track.cover || '') ? track.cover : ''
+    cover: /^https:\/\//.test(track.cover || '') ? track.cover : '',
+    coverLarge: big || (/^https:\/\//.test(track.cover || '') ? track.cover : '')
   };
 }
 

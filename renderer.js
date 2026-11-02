@@ -106,23 +106,33 @@ let prefetchGen = 0;
 
 // ----- Постоянный кэш треков (file://-мгновенный старт) -----
 
-// Ссылки для прогрева HLS: греем только те источники, которые реально играют —
-// это okcdn-HLS (t.stream) и расшифрованные cs*-ссылки с .m3u8. Прямые mp3
-// прогрева не требуют: для них фоном качается файл в постоянный кэш.
+// Ссылки для прогрева HLS: HLS — это okcdn-поток (t.stream) и расшифрованные
+// cs*-ссылки с .m3u8. Прямые mp3 прогрева не требуют: для них фоном качается
+// файл в постоянный кэш. Тип потока приходит из главного процесса: у okcdn
+// в адресе нет «.m3u8», поэтому один URL ничего не говорит — но и путать
+// скачанный mp3 с плейлистом нельзя, поэтому тип учитываем только для
+// самого t.stream.
+function isHlsLink(t, url) {
+  if (!url) return false;
+  if (/\.m3u8/i.test(url)) return true;
+  return !!t && t.stream === url && String(t.streamType || '').startsWith('hls');
+}
+
 function linksForWarm(t) {
   const out = [];
-  if (t && t.stream && t.stream.includes('.m3u8')) out.push(t.stream);
-  if (t && t.url && t.url.includes('.m3u8')) out.push(t.url);
+  if (t && t.stream && isHlsLink(t, t.stream)) out.push(t.stream);
+  if (t && t.url && /\.m3u8/i.test(t.url)) out.push(t.url);
   return out.slice(0, 2);
 }
 
 // Прямая ссылка для постоянного кэша: mp3/aac без HLS-обёртки. Для самозалитов
 // это часто расшифрованная cs*-ссылка — медленная сеть, но качается в фоне,
 // пока играют другие треки, и после этого трек открывается мгновенно навсегда.
+// HLS сюда не попадает ни в каком виде: скачался бы плейлист, а не звук.
 function directUrlFor(t) {
   if (!t || t.local) return '';
-  if (t.stream && !/\.m3u8/i.test(t.stream)) return t.stream;
-  if (t.url && !/\.m3u8/i.test(t.url)) return t.url;
+  if (t.stream && !isHlsLink(t, t.stream)) return t.stream;
+  if (t.url && !isHlsLink(t, t.url)) return t.url;
   return '';
 }
 
@@ -227,7 +237,11 @@ function schedulePrefetch(list) {
           const u = res.urls && res.urls[t.id];
           const st = res.streams && res.streams[t.id];
           if (u) { t.url = u; t.urlTime = now; }
-          if (st && st.url) { t.stream = st.url; t.streamExpires = st.expires; }
+          if (st && st.url) {
+            t.stream = st.url;
+            t.streamExpires = st.expires;
+            if (st.type) t.streamType = st.type;
+          }
           const urls = linksForWarm(t);
           if (urls.length) items.push({ id: t.id, urls });
         }
@@ -520,9 +534,11 @@ $('btn-logout').addEventListener('click', async () => {
     resumeSeek: 0
   });
   playlistNav.textContent = '';
+  toggleLyrics(false);
   updateNowPlaying();
   appView.classList.add('hidden');
   bottomBar.classList.add('hidden');
+  applyHomeLayout();
   $('nav-search').classList.add('hidden');
   searchInput.value = '';
   loginView.classList.remove('hidden');
@@ -828,6 +844,7 @@ async function openView(view) {
   tracksContainer.classList.toggle('hidden', homeMode);
   // Голограмма кота — статичная картинка: тяжёлый canvas-движок не запускаем
   if (!homeMode) stopHoloCat();
+  applyHomeLayout();
   $('btn-import').classList.toggle('hidden', view.type !== 'local');
   // Свой плейлист можно очистить только из его же экрана — кнопка видна там
   $('btn-del-playlist').classList.toggle('hidden', view.type !== 'local-playlist');
@@ -1393,10 +1410,15 @@ function initHomeBgFx() {
 
 // ---------------------------------------------------------------- Спектрограф подиума
 
-// Спектрограф подиума: частотное кольцо лежит НА подиуме — центр ровно на оси
-// (x=210/420, грань y=456/520 из viewBox), пропорции эллипса — как у грани
-// (ry/rx = 23/156). Частоты берём из уже собранного Web Audio-графа
-// (fx.analyser, fftSize 2048 — 1024 корзины), звук не перестраивается.
+// Спектрограф главного экрана. Две геометрии:
+//  • «Стандартный» — частотное кольцо лежит НА подиуме: центр ровно на оси
+//    (x=210/420, грань y=456/520 из viewBox), пропорции эллипса — как у грани
+//    (ry/rx = 23/156). Канвас при этом живёт внутри .holo-tilt.
+//  • «Плоский» — канвас растянут на весь #home-view, кольцо — ровный круг без
+//    перспективы, центр и радиус берутся у якоря: кот (или кнопка ▶, если кота
+//    нет) в стилизованном пресете, обложка — в «Карточке трека».
+// Частоты берём из уже собранного Web Audio-графа (fx.analyser, fftSize 2048 —
+// 1024 корзины), звук не перестраивается.
 // Бас — по широким бокам (не перекрыт кнопкой ▶), верха — спереди/сзади.
 // Лучи — отдельные фиксированные линии от кольца наружу по полу, случайного
 // дрожания нет вовсе (иначе рисуется «мазня»): вся геометрия луча
@@ -1407,16 +1429,21 @@ const podSpectrum = (() => {
   if (!cv) return null;
   const g = cv.getContext('2d');
   const view = $('home-view');
+  const holder = $('holo-tilt');                // сцена кота — дом канваса в «Стилизованном»
+  const cardCover = $('card-cover');
   // Кольцо спектра на плоскости подиума: центр — центр грани подиума,
-  // сжатие эллипса — то же, что у грани (ry/rx = 23/156). Канвас шире сцены
-  // (160%), но его центр совпадает с осью подиума → CXR = 0.5.
+  // сжатие эллипса — то же, что у грани (ry/rx = 23/156). Канвас шире сцены,
+  // но его центр совпадает с осью подиума → CXR = 0.5.
   const CXR = 0.5, CYR = 456 / 520, SQ = 23 / 156;
   const F_TOP = 12000, F_BOT = 55;
   // Параметры лучей — ползунки в настройках (settings.spec*). settings объявлен
   // ниже по файлу, поэтому читаем лениво: на первом кадре и при setParams().
   let RAYS = 52;               // лучей по окружности кольца
-  let THICK = 1, LENM = 1, DOTS = 1, ENABLED = true;
+  let THICK = 1, LENM = 1, DOTS = 1;
   let INT_BASS = 1, INT_MID = 1, INT_HIGH = 1;
+  // Режим: 'standard' — эллипс на подиуме, 'flat' — круг вокруг обложки
+  // (пресет «Карточка»), 'off' — тишина
+  let MODE = 'standard';
   let cfgLoaded = false;
   function loadCfg() {
     if (cfgLoaded) return;
@@ -1428,7 +1455,10 @@ const podSpectrum = (() => {
       INT_BASS = Math.min(2, Math.max(0.5, Number(settings.specIntBass) || 1));
       INT_MID = Math.min(2, Math.max(0.5, Number(settings.specIntMid) || 1));
       INT_HIGH = Math.min(2, Math.max(0.5, Number(settings.specIntHigh) || 1));
-      ENABLED = settings.specEnabled !== false;
+      const mode = settings.homePreset === 'card'
+        ? (settings.cardSpectrum !== false ? 'flat' : 'off')
+        : (settings.homeSpectrum !== 'off' ? 'standard' : 'off');
+      if (mode !== MODE) { MODE = mode; place(); W = 0; }
       const r = Math.round(Math.min(96, Math.max(24, Number(settings.specRays) || 52)));
       if (r !== RAYS) {
         RAYS = r; smooth = new Float32Array(RAYS); framePk = new Float32Array(RAYS);
@@ -1437,7 +1467,28 @@ const podSpectrum = (() => {
       }
     } catch (e) { /* settings ещё не готов — работаем на дефолтах */ }
   }
-  function setParams() { cfgLoaded = false; loadCfg(); }
+  // Канвас переезжает между сценой и экраном: в «Стилизованном» он лежит в
+  // .holo-tilt (на грани подиума), в карточке — прямо в #home-view, первым
+  // элементом, чтобы рисоваться под обложкой
+  function place() {
+    const flat = MODE === 'flat';
+    if (flat && cv.parentElement !== view) view.insertBefore(cv, view.firstChild);
+    // На подиуме канвас стоит перед фото кота — кот рисуется поверх колец
+    else if (!flat && cv.parentElement !== holder) holder.insertBefore(cv, $('home-cat-photo'));
+    cv.classList.toggle('flat', flat);
+    cv.style.display = MODE === 'off' ? 'none' : '';
+  }
+  // Сколько места у луча до края канваса по его направлению (ca, sa) —
+  // кольцо в плоском режиме может стоять не по центру, и общий предел
+  // по ближайшему краю обрезал бы и те лучи, которым есть куда расти
+  function edgeRoom(x, y, ca, sa, w, h) {
+    const tx = ca > 1e-4 ? (w - x) / ca : ca < -1e-4 ? -x / ca : Infinity;
+    const ty = sa > 1e-4 ? (h - y) / sa : sa < -1e-4 ? -y / sa : Infinity;
+    return Math.min(tx, ty);
+  }
+  function setParams() {
+    cfgLoaded = false; loadCfg(); W = 0; resize();
+  }
   const BUF = new Uint8Array(1024);
   let smooth = new Float32Array(RAYS);
   let framePk = new Float32Array(RAYS);  // пики полос текущего кадра
@@ -1510,7 +1561,7 @@ const podSpectrum = (() => {
     W = r.width; H = r.height;
     // Сцена (бокс кота) — якорь для размера кольца: канвас шире сцены, и
     // привязка к W раздула бы кольцо при смене CSS-ширины канваса
-    const box = cv.parentElement.getBoundingClientRect();
+    const box = holder.getBoundingClientRect();
     SW = box.width; SH = box.height;
     cv.width = Math.round(W * dpr);
     cv.height = Math.round(H * dpr);
@@ -1548,7 +1599,8 @@ const podSpectrum = (() => {
     // Сцена долгое время может быть скрыта (login/другие вкладки): canvas
     // тогда нулевой. Самолечение — перемеряем, как только она появилась.
     if (!W) resize();
-    if (!W || !SW) return;
+    // Бокс сцены нужен только кольцу на подиуме: в «Карточке» кот скрыт и SW = 0
+    if (!W || (MODE === 'standard' && !SW)) return;
     const an = fx.spectrum || fx.analyser;
     const live = !!(an && fx.ctx && fx.ctx.state === 'running' && !audio.paused);
     if (live) {
@@ -1579,46 +1631,70 @@ const podSpectrum = (() => {
     idle = ts / 1000;
     loadCfg();
     // Спектрограф выключен настройкой: гасим канвас и не рисуем
-    if (!ENABLED) {
+    if (MODE === 'off') {
       if (W) { g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H); }
       return;
     }
 
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.clearRect(0, 0, W, H);
-    const cx = W * CXR, cy = H * CYR;
-    // Кольцо привязано к СЦЕНЕ (та же пропорция, что и раньше при канвасе 160%:
-    // 0.23*1.6 = 0.368 ширины сцены), а не к канвасу
-    const Rx = Math.min(SW * 0.368, SH * 0.42);
-    const Ry = Rx * SQ;                          // сжатие как у грани подиума
-    const L = Rx * 0.92;                         // вылет лучей по полу
+    // Геометрия кольца. На подиуме — эллипс с перспективой грани, в плоском
+    // режиме — ровный круг вокруг якоря (кот / кнопка ▶ / обложка). Плоскость
+    // задаётся двумя числами: sq — сжатие по вертикали, и центр.
+    let cx, cy, Rx, Ry, SQY = SQ;
+    if (MODE === 'flat') {
+      const ar = cardCover ? cardCover.getBoundingClientRect() : null;
+      const vr = view.getBoundingClientRect();
+      if (!ar || !ar.width) return;
+      cx = ar.left - vr.left + ar.width / 2;
+      cy = ar.top - vr.top + ar.height / 2;
+      SQY = 1;
+      // Радиус заметно больше половины диагонали обложки (0.707): между
+      // углами и кольцом остаётся зазор, и кольцо читается кругом, а не квадратом
+      Rx = ar.width * 0.84;
+    } else {
+      cx = W * CXR;
+      cy = H * CYR;
+      // Кольцо привязано к СЦЕНЕ (та же пропорция, что и раньше при канвасе 160%:
+      // 0.23*1.6 = 0.368 ширины сцены), а не к канвасу
+      Rx = Math.min(SW * 0.368, SH * 0.42);
+    }
+    Ry = Rx * SQY;
+    // Вылет лучей: на подиуме — по полу, в плоском режиме чуть короче,
+    // иначе на маленьком окне лучи упираются в края почти сразу
+    const L = Rx * (MODE === 'flat' ? 0.7 : 0.92);
     // Мягкий предел длины: до края канваса, чтобы лучи на предельной длине
-    // затухали у границы, а не резались об неё вертикальной чертой
+    // затухали у границы, а не резались об неё вертикальной чертой. В плоском
+    // режиме предел считается для каждого луча по его направлению (edgeRoom)
     const MAXLEN = Math.max(0, W / 2 - (Rx + 2.5) - 6);
     let aAvg = 0;
 
     g.globalCompositeOperation = 'lighter';
 
     // Прямые лучи по полу: каждый луч — ровная линия точек от кольца наружу,
-    // строго по радиусу (в экранных координатах — прямая, сжатие SQ даёт
-    // перспективу пола). Без закручивания и случайных дрожаний — мазни нет.
+    // строго по радиусу (в экранных координатах — прямая, сжатие SQY даёт
+    // перспективу пола; в плоском режиме SQY = 1, то есть без перспективы).
+    // Без закручивания и случайных дрожаний — мазни нет.
     for (let i = 0; i < RAYS; i++) {
       const phi = ((i + 0.5) / RAYS) * Math.PI * 2;
       const a = amp(i, live);
       aAvg += a / RAYS;
       if (a <= 0.02) continue;
-      const depth = (Math.sin(phi) + 1) / 2;     // 1 спереди, 0 позади
-      const len = Math.min(L * LENM * a * (0.8 + 0.4 * depth), MAXLEN);
-      if (len < 4) continue;
+      // На подиуме дальние лучи (задние) бледнее — это пол в перспективе.
+      // В плоском кольце перспективы нет: все лучи одинаковой яркости
+      const depth = MODE === 'flat' ? 0.85 : (Math.sin(phi) + 1) / 2;
       const r0 = Rx + 2.5;
       const ca = Math.cos(phi), sa = Math.sin(phi);
+      const len = Math.min(L * LENM * a * (0.8 + 0.4 * depth),
+        MODE === 'flat' ? edgeRoom(cx, cy, ca, sa, W, H) - r0 - 6 : MAXLEN);
+      if (len < 4) continue;
       // Направляющая линия — держит луч собранным
       g.globalAlpha = (0.06 + 0.16 * a) * (0.4 + 0.6 * depth);
       g.strokeStyle = '#60beff';
       g.lineWidth = 1.1 * THICK;
       g.beginPath();
-      g.moveTo(cx + r0 * ca, cy + r0 * sa * SQ);
-      g.lineTo(cx + (r0 + len) * ca, cy + (r0 + len) * sa * SQ);
+      g.moveTo(cx + r0 * ca, cy + r0 * sa * SQY);
+      g.lineTo(cx + (r0 + len) * ca, cy + (r0 + len) * sa * SQY);
       g.stroke();
       // Точки по лучу: у кольца плотнее и горячее, к кончику реже и синее.
       // С толщиной растёт и число точек — иначе на максимуме они сливаются
@@ -1628,7 +1704,7 @@ const podSpectrum = (() => {
         const t = Math.pow((d + 0.5) / count, 0.8);
         const rrr = r0 + len * t;
         const x = cx + rrr * ca;
-        const y = cy + rrr * sa * SQ;
+        const y = cy + rrr * sa * SQY;
         const ci = t < 0.25 ? 0 : t < 0.5 ? 1 : t < 0.8 ? 2 : 3;
         const size = (2.8 - 1.3 * t + a * 1.5) * (0.75 + 0.5 * depth) * (0.55 + 0.45 * THICK);
         g.globalAlpha = (0.35 + 0.65 * a) * (1 - t * 0.42) * (0.45 + 0.55 * depth);
@@ -1657,6 +1733,7 @@ const podSpectrum = (() => {
   // ResizeObserver докручивает: срабатывает и на смену display hidden/видимо,
   // и на изменение высоты окна (ctx-размер driven vh-шириной .home-cat)
   if (window.ResizeObserver) new ResizeObserver(resize).observe(cv);
+  place();
   resize();
   requestAnimationFrame(frame);
   return { resize, setParams };
@@ -1707,6 +1784,73 @@ audio.addEventListener('timeupdate', () => {
 window.addEventListener('beforeunload', () => { savePlaybackNow(); });
 audio.addEventListener('ended', updateHomePlay);
 updateHomePlay();
+
+// ---------------------------------------------------------------- Пресеты главного экрана
+
+// Оба пресета не дублируют управление: настоящие кнопки и перемотка нижнего
+// бара переезжают на сцену (в «Карточке» — под обложку, в «Стилизованном» —
+// под кота), а на их месте остаётся метка-комментарий. Так все обработчики
+// и ссылки ($('seek-bar') и т. п.) продолжают работать. Обратно возвращаем
+// только при уходе с главной и выходе. Режим текста раскладку не трогает:
+// его оверлей непрозрачный и поверх всего, нижний бар в нём скрыт через
+// body.lyrics-open — трогать док не нужно, иначе элементы моргают на
+// входе и выходе.
+const CARD_DOCK = [
+  ['card-slot-l', ['btn-lyrics', 'btn-eq', 'btn-discord']],
+  ['card-slot-m', ['.progress']],
+  ['card-slot-r', ['btn-shuffle', 'btn-repeat', 'btn-mute', 'volume-bar']],
+  ['card-slot-c', ['btn-prev', 'btn-play-pause', 'btn-next']]
+];
+const cardDocked = [];   // [узел, метка] в порядке переноса
+
+function dockCardControls() {
+  if (cardDocked.length) return;
+  for (const [slot, items] of CARD_DOCK) {
+    for (const sel of items) {
+      const el = sel[0] === '.' ? bottomBar.querySelector(sel) : $(sel);
+      if (!el) continue;
+      const mark = document.createComment('dock');
+      el.parentNode.insertBefore(mark, el);
+      $(slot).appendChild(el);
+      cardDocked.push([el, mark]);
+    }
+  }
+}
+
+function undockCardControls() {
+  for (const [el, mark] of cardDocked) mark.parentNode.replaceChild(el, mark);
+  cardDocked.length = 0;
+}
+
+// Раскладка главной по настройкам «Внешнего вида». Зовём при смене экрана,
+// настроек и выходе из аккаунта.
+function applyHomeLayout() {
+  const home = $('home-view');
+  const card = settings.homePreset === 'card';
+  home.classList.toggle('preset-card', card);
+  home.classList.toggle('preset-stylized', !card);
+  // Капсула над обложкой: одна строка («Автор — Название») или две
+  home.querySelector('.card-meta').classList.toggle('meta-one', settings.cardMetaLines === 'one');
+  // Управление живёт на сцене, пока видна главная (режим текста — непрозрачный
+  // оверлей поверх, раскладку не меняем)
+  const onStage = !appView.classList.contains('hidden')
+    && !home.classList.contains('hidden');
+  // Имя класса body не должно совпадать с классами внутри (.home-card —
+  // сама карточка, скрытая по умолчанию): иначе прячется всё окно
+  document.body.classList.toggle('card-mode', onStage && card);
+  document.body.classList.toggle('stylized-mode', onStage && !card);
+  if (onStage) dockCardControls();
+  else undockCardControls();
+  if (podSpectrum) podSpectrum.setParams();
+}
+
+function updateHomeCard() {
+  const t = state.current;
+  $('card-artist').textContent = t ? t.artist : 'Ничего не играет';
+  $('card-title').textContent = t ? t.title : 'Выберите трек или нажмите ▶';
+  setCover($('card-cover'), t ? (t.coverLarge || t.cover) : '', '♫');
+}
+updateHomeCard();
 
 // ---------------------------------------------------------------- Контекстное меню
 
@@ -2741,6 +2885,7 @@ async function ensureUrls(pos, force) {
     if (streams[t.id]) {
       t.stream = streams[t.id].url;
       t.streamExpires = streams[t.id].expires;
+      if (streams[t.id].type) t.streamType = streams[t.id].type;
     }
   }
   // Пока резолвим треки рядом с играющим — сразу греем их HLS-ссылки, иначе
@@ -2866,7 +3011,7 @@ function loadSource(url) {
     }
   }
 
-  if (url.includes('.m3u8') && Hls.isSupported()) {
+  if (isHlsLink(state.current, url) && Hls.isSupported()) {
     // startFragPrefetch качает первый сегмент параллельно манифесту — экономит
     // секунду-другую на старте. fragLoadingTimeOut поднят: холодный сегмент
     // самозалита ВК собирает до 40 с, дефолтные 20 с рвали его на ретраи.
@@ -2896,6 +3041,13 @@ function loadSource(url) {
 function onPlaybackError() {
   if (!state.current) return;
   if (state.current.local) return;
+  // Не открылся файл из постоянного кэша — он битый, иначе после перезапуска
+  // трек снова взял бы его и замолчал
+  if (/^file:/i.test(audio.currentSrc || audio.src || '')) {
+    const id = state.current.id;
+    localHits.delete(id);
+    ipcRenderer.invoke('audio:cacheDrop', { id }).catch(() => {});
+  }
   if (!state.retried) {
     state.retried = true;
     // Стрим не сыгрался: сбрасываем кеш ссылок, чтобы force-запрос выдал новые
@@ -2979,6 +3131,8 @@ audio.addEventListener('ended', () => {
 
 function togglePlay() {
   if (!state.current) {
+    // На главной списка нет — стартуем как большая кнопка ▶ («Моя музыка»)
+    if (state.view.type === 'home') { $('home-play').click(); return; }
     if (state.displayed.length) startQueue(state.displayed, firstPlayable(state.displayed));
     return;
   }
@@ -3042,6 +3196,13 @@ const DEFAULT_SETTINGS = {
   surround: false,     // расширение стереобазы
   fadePause: true,     // плавное затухание при паузе
   cacheLimitMB: 2048,  // 50..5120 МБ
+  // Внешний вид главного экрана: пресет и его собственные параметры.
+  // Пресеты держат свои поля отдельно, чтобы переключение туда-обратно
+  // не теряло настройки второго
+  homePreset: 'stylized',      // 'stylized' | 'card'
+  homeSpectrum: 'standard',    // 'standard' | 'off' — спектр на подиуме
+  cardSpectrum: true,          // плоское кольцо вокруг обложки (карточка)
+  cardMetaLines: 'two',        // 'one' | 'two' — строк в капсуле над обложкой
   // Спектр на подиуме
   specThick: 1,        // множитель толщины лучей 0.5..2.5
   specLen: 1,          // множитель длины лучей 0.5..2
@@ -3049,8 +3210,7 @@ const DEFAULT_SETTINGS = {
   specDots: 1,         // множитель плотности точек 0.5..2
   specIntBass: 1,      // интенсивность баса 0.5..2
   specIntMid: 1,       // интенсивность середины 0.5..2
-  specIntHigh: 1,      // интенсивность верхов 0.5..2
-  specEnabled: true    // спектрограф включён (иначе — скрыт)
+  specIntHigh: 1       // интенсивность верхов 0.5..2
 };
 let settings = (() => {
   try {
@@ -3058,6 +3218,24 @@ let settings = (() => {
   } catch (e) {
     return Object.assign({}, DEFAULT_SETTINGS);
   }
+})();
+
+// Старый переключатель «Спектрограф включён» переехал во «Внешний вид».
+// У тех, кто его выключал, спектра быть не должно и после обновления.
+// Заодно чистим поля промежуточной сборки: скрытие кота и плоский подиум
+(() => {
+  let raw = null;
+  try { raw = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null'); } catch (e) { /* ок */ }
+  if (!raw || typeof raw !== 'object') return;
+  if (!('specEnabled' in raw) && !('homeCat' in raw) && raw.homeSpectrum !== 'flat') return;
+  if (raw.specEnabled === false && !('homeSpectrum' in raw)) {
+    settings.homeSpectrum = 'off';
+    settings.cardSpectrum = false;
+  }
+  if (settings.homeSpectrum !== 'off') settings.homeSpectrum = 'standard';
+  delete settings.specEnabled;
+  delete settings.homeCat;
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) { /* ок */ }
 })();
 
 function saveSettings() {
@@ -3410,8 +3588,27 @@ function fillSettingsUI() {
   $('s-spec-intm-v').textContent = Math.round(settings.specIntMid * 100) + '%';
   $('s-spec-inth').value = settings.specIntHigh;
   $('s-spec-inth-v').textContent = Math.round(settings.specIntHigh * 100) + '%';
-  $('s-spec-enabled').checked = settings.specEnabled !== false;
+  fillAppearanceUI();
   refreshCacheStats();
+}
+
+// Вкладка «Внешний вид»: видны только параметры выбранного пресета
+function fillAppearanceUI() {
+  const card = settings.homePreset === 'card';
+  for (const btn of $('settings-backdrop').querySelectorAll('.s-preset')) {
+    const on = btn.dataset.preset === settings.homePreset;
+    btn.classList.toggle('on', on);
+    btn.setAttribute('aria-checked', String(on));
+  }
+  document.querySelector('.app-stylized').classList.toggle('hidden', card);
+  document.querySelector('.app-card').classList.toggle('hidden', !card);
+  $('s-home-spec').checked = settings.homeSpectrum !== 'off';
+  $('s-card-spec').checked = settings.cardSpectrum !== false;
+  for (const chip of $('s-card-meta').querySelectorAll('.chip')) {
+    const on = chip.dataset.meta === settings.cardMetaLines;
+    chip.classList.toggle('on', on);
+    chip.setAttribute('aria-checked', String(on));
+  }
 }
 
 function openSettings() {
@@ -3425,7 +3622,7 @@ function closeSettings() {
 
 // Левая панель настроек: показываем одну группу за раз. Выбор запоминаем на
 // время сеанса, чтобы «Готово» → повторное открытие возвращало туда же.
-let settingsGroup = 'playback';
+let settingsGroup = 'appearance';
 
 function showSettingsGroup(name) {
   const nav = $('settings-backdrop').querySelectorAll('.s-nav-item');
@@ -3540,12 +3737,33 @@ function bindSettingsUI() {
     });
   }
 
-  $('s-spec-enabled').addEventListener('change', (e) => {
-    settings.specEnabled = e.target.checked;
+  // Внешний вид
+  for (const btn of $('settings-backdrop').querySelectorAll('.s-preset')) {
+    btn.addEventListener('click', () => {
+      settings.homePreset = btn.dataset.preset;
+      saveSettings();
+      fillAppearanceUI();
+      applyHomeLayout();
+    });
+  }
+  $('s-home-spec').addEventListener('change', (e) => {
+    settings.homeSpectrum = e.target.checked ? 'standard' : 'off';
     saveSettings();
-    if (podSpectrum) podSpectrum.setParams();
-    toast(settings.specEnabled ? 'Спектрограф включён' : 'Спектрограф скрыт');
+    applyHomeLayout();
   });
+  $('s-card-spec').addEventListener('change', (e) => {
+    settings.cardSpectrum = e.target.checked;
+    saveSettings();
+    applyHomeLayout();
+  });
+  for (const chip of $('s-card-meta').querySelectorAll('.chip')) {
+    chip.addEventListener('click', () => {
+      settings.cardMetaLines = chip.dataset.meta;
+      saveSettings();
+      fillAppearanceUI();
+      applyHomeLayout();
+    });
+  }
 
   // Служебное
   $('s-cache').addEventListener('input', (e) => {
@@ -3596,7 +3814,7 @@ function bindSettingsUI() {
     settings = Object.assign({}, DEFAULT_SETTINGS);
     saveSettings();
     applyFx();
-    if (podSpectrum) podSpectrum.setParams();
+    applyHomeLayout();
     ipcRenderer.invoke('cache:limit', { bytes: settings.cacheLimitMB * 1048576 }).catch(() => {});
     fillSettingsUI();
     toast('Настройки сброшены');
@@ -3907,6 +4125,7 @@ function updateNowPlaying() {
   $('current-title').textContent = t ? t.title : 'Ничего не играет';
   $('current-artist').textContent = t ? t.artist : 'Выберите трек';
   setCover($('current-cover'), t ? t.cover : '', '♫');
+  updateHomeCard();
   document.title = t ? `${t.artist} — ${t.title}` : 'NK Player';
   seekBar.value = 0;
   $('time-current').textContent = '0:00';
@@ -3923,6 +4142,7 @@ function updateNowPlaying() {
   }
 
   pushDiscordPresence();
+  syncLyricsTrack();
 }
 
 // ---------------------------------------------------------------- Discord RPC
@@ -3978,6 +4198,317 @@ btnDiscord.addEventListener('click', async () => {
   if (!on) ipcRenderer.invoke('discord:set-enabled', false);
 })();
 
+// ---------------------------------------------------------------- Текст песни
+
+// Оверлей поверх списка: текст текущего трека. Тексты ищет главный процесс
+// (LRCLIB, затем NetEase) и кэширует на диске; здесь — кэш на сессию, режим
+// показа и подсветка строки по времени для синхронных текстов.
+const lyricsView = $('lyrics-view');
+const lyBody = $('ly-body');
+const btnLyrics = $('btn-lyrics');
+const LYRICS_SOURCES = { lrclib: 'LRCLIB', netease: 'NetEase Cloud Music', qq: 'QQ Music' };
+
+const lyrics = {
+  cache: new Map(),   // id трека -> результат (null — не найден)
+  trackId: null,      // для какого трека сейчас отрисован текст
+  data: null,
+  // Режим не сохраняется: кнопка текста открывает «Синхронно», кнопка на
+  // обложке — «Выкл.», а чипы переключают только на текущую сессию
+  mode: 'synced',
+  token: 0,
+  lines: [],          // DOM-строки синхронного текста
+  active: -1,
+  raf: 0,
+  userScrollAt: 0
+};
+
+function lyricsOpen() {
+  return !lyricsView.classList.contains('hidden');
+}
+
+let lyricsHideTimer = 0;
+function toggleLyrics(open) {
+  clearTimeout(lyricsHideTimer);
+  btnLyrics.classList.toggle('on', open);
+  btnLyrics.setAttribute('aria-expanded', String(open));
+  if (open) {
+    // Нижний бар скрывается (body.lyrics-open), текст занимает весь экран.
+    // Раскладку главной не трогаем: оверлей непрозрачный, сцена под ним
+    // остаётся собранной — ничего не моргает ни на входе, ни на выходе
+    document.body.classList.add('lyrics-open');
+    lyricsView.classList.remove('hidden');
+    // Два кадра, иначе переход из display:none не успеет сработать
+    requestAnimationFrame(() => requestAnimationFrame(() => lyricsView.classList.add('ly-shown')));
+    syncLyricsTrack();
+  } else {
+    lyricsView.classList.remove('ly-shown');
+    stopLyricsLoop();
+    // Бар возвращаем только когда оверлей полностью скрыт
+    lyricsHideTimer = setTimeout(() => {
+      lyricsView.classList.add('hidden');
+      document.body.classList.remove('lyrics-open');
+    }, 380);
+  }
+}
+
+function lyricsStatus(text, retry) {
+  // Без текста обложка занимает центр, а статус живёт под ней
+  lyricsView.classList.add('no-lyrics');
+  lyBody.className = '';
+  lyBody.textContent = '';
+  const box = document.createElement('div');
+  box.className = 'ly-status';
+  box.textContent = text;
+  if (retry) {
+    const btn = document.createElement('button');
+    btn.className = 'btn-ghost';
+    btn.textContent = 'Повторить';
+    btn.addEventListener('click', () => loadLyrics(state.current, true));
+    box.appendChild(document.createElement('br'));
+    box.appendChild(btn);
+  }
+  const slot = $('ly-status-slot');
+  slot.textContent = '';
+  slot.appendChild(box);
+  $('ly-source').textContent = '';
+  setLyricsModes(false, false);
+}
+
+function setLyricsModes(hasSynced, hasPlain) {
+  const synced = $('ly-mode-synced');
+  const plain = $('ly-mode-plain');
+  const off = $('ly-mode-off');
+  synced.disabled = !hasSynced;
+  plain.disabled = !hasPlain;
+  const shown = lyrics.mode === 'off' ? 'off'
+    : (hasSynced && lyrics.mode === 'synced' ? 'synced' : (hasPlain ? 'plain' : ''));
+  synced.classList.toggle('on', shown === 'synced');
+  plain.classList.toggle('on', shown === 'plain');
+  off.classList.toggle('on', shown === 'off');
+  synced.setAttribute('aria-pressed', String(shown === 'synced'));
+  plain.setAttribute('aria-pressed', String(shown === 'plain'));
+  off.setAttribute('aria-pressed', String(shown === 'off'));
+}
+
+// Текст ищем по текущему треку, только когда оверлей открыт
+function syncLyricsTrack() {
+  if (!lyricsOpen()) return;
+  const t = state.current;
+  $('ly-title').textContent = t ? t.title : 'Ничего не играет';
+  $('ly-artist').textContent = t ? t.artist : '';
+  setCover($('ly-cover'), t ? t.cover : '', '♫');
+  $('ly-bg').style.backgroundImage = t && t.cover ? `url("${String(t.cover).replace(/"/g, '%22')}")` : '';
+  if (!t) {
+    lyrics.trackId = null;
+    lyrics.data = null;
+    stopLyricsLoop();
+    lyricsStatus('Включите трек, чтобы увидеть его текст');
+    return;
+  }
+  // Тот же трек (повторный старт, перезапрос ссылки) — текст уже есть или грузится
+  if (lyrics.trackId === t.id) {
+    startLyricsLoop();
+    return;
+  }
+  loadLyrics(t, false);
+}
+
+async function loadLyrics(t, force) {
+  if (!t) return;
+  const token = ++lyrics.token;
+  lyrics.trackId = t.id;
+  lyrics.data = null;
+  stopLyricsLoop();
+
+  if (!force && lyrics.cache.has(t.id)) {
+    renderLyrics(lyrics.cache.get(t.id));
+    return;
+  }
+  lyricsStatus('Ищем текст…');
+  let data = null;
+  try {
+    data = await vkCall('lyrics:get', { artist: t.artist, title: t.title, duration: t.duration });
+  } catch (e) {
+    if (token === lyrics.token) lyricsStatus(e.message || 'Не удалось загрузить текст', true);
+    return;
+  }
+  lyrics.cache.set(t.id, data);
+  if (token === lyrics.token) renderLyrics(data);
+}
+
+function renderLyrics(data) {
+  lyrics.data = data;
+  lyrics.lines = [];
+  lyrics.active = -1;
+  // Текст есть — раскладываем по панелям: обложка слева, текст справа
+  lyricsView.classList.remove('no-lyrics');
+  $('ly-status-slot').textContent = '';
+  const hasSynced = !!(data && data.synced && data.synced.length);
+  const hasPlain = !!(data && data.plain);
+  // Режим «Выкл.» — только обложка по центру, без текста и статусов
+  if (lyrics.mode === 'off') {
+    lyricsView.classList.add('no-lyrics');
+    lyBody.className = '';
+    lyBody.textContent = '';
+    stopLyricsLoop();
+    setLyricsModes(hasSynced, hasPlain);
+    $('ly-source').textContent = data && !data.instrumental
+      ? `Источник: ${LYRICS_SOURCES[data.source] || data.source}` : '';
+    return;
+  }
+  if (!data) {
+    lyricsStatus('Текст для этого трека не найден');
+    return;
+  }
+  if (data.instrumental) {
+    lyricsStatus('Инструментальная композиция — слов нет');
+    $('ly-source').textContent = `Источник: ${LYRICS_SOURCES[data.source] || data.source}`;
+    return;
+  }
+
+  setLyricsModes(hasSynced, hasPlain);
+  const synced = hasSynced && lyrics.mode === 'synced';
+  lyBody.className = synced ? 'synced' : 'plain';
+  lyBody.textContent = '';
+  lyBody.scrollTop = 0;
+
+  const frag = document.createDocumentFragment();
+  if (synced) {
+    data.synced.forEach((l) => {
+      const el = document.createElement('div');
+      el.className = l.text ? 'ly-line' : 'ly-line gap';
+      el.textContent = l.text;
+      el.addEventListener('click', () => {
+        if (!audio.duration) return;
+        audio.currentTime = Math.max(0, l.t);
+        lyrics.userScrollAt = 0;
+      });
+      frag.appendChild(el);
+      lyrics.lines.push(el);
+    });
+  } else {
+    for (const line of data.plain.split('\n')) {
+      const el = document.createElement('div');
+      el.className = line.trim() ? 'ly-line' : 'ly-line gap';
+      el.textContent = line;
+      frag.appendChild(el);
+    }
+  }
+  lyBody.appendChild(frag);
+  $('ly-source').textContent = `Источник: ${LYRICS_SOURCES[data.source] || data.source}`;
+  if (synced) startLyricsLoop();
+}
+
+function setLyricsMode(mode) {
+  lyrics.mode = mode;
+  stopLyricsLoop();
+  // Текста нет — перерисовывать нечего, но подсветку чипов обновить нужно
+  if (!lyrics.data) setLyricsModes(false, false);
+  if (lyrics.data) renderLyrics(lyrics.data);
+}
+
+// Подсветка идёт по кадрам: timeupdate приходит ~4 раза в секунду, и строки
+// заметно опаздывали бы за голосом
+function startLyricsLoop() {
+  if (lyrics.raf || !lyrics.lines.length || !lyricsOpen()) return;
+  const step = () => {
+    lyrics.raf = requestAnimationFrame(step);
+    highlightLyric();
+  };
+  lyrics.raf = requestAnimationFrame(step);
+}
+
+function stopLyricsLoop() {
+  if (lyrics.raf) cancelAnimationFrame(lyrics.raf);
+  lyrics.raf = 0;
+}
+
+function highlightLyric() {
+  const list = lyrics.data && lyrics.data.synced;
+  if (!list || !list.length) return;
+  // Небольшое опережение: строка загорается чуть раньше, чем её поют
+  const now = (audio.currentTime || 0) + 0.15;
+  let idx = -1;
+  for (let lo = 0, hi = list.length - 1; lo <= hi;) {
+    const mid = (lo + hi) >> 1;
+    if (list[mid].t <= now) { idx = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  if (idx === lyrics.active) return;
+  const prev = lyrics.active;
+  lyrics.active = idx;
+  lyrics.lines.forEach((el, i) => {
+    el.classList.toggle('active', i === idx);
+    el.classList.toggle('past', i < idx);
+  });
+  // Пока пользователь сам листает текст, не дёргаем прокрутку
+  if (idx >= 0 && Date.now() - lyrics.userScrollAt > 3000) {
+    const el = lyrics.lines[idx];
+    const target = el.offsetTop - (lyBody.clientHeight - el.offsetHeight) / 2;
+    lyBody.scrollTo({
+      top: Math.max(0, target),
+      behavior: Math.abs(idx - prev) > 3 ? 'auto' : 'smooth'
+    });
+  }
+}
+
+lyBody.addEventListener('wheel', () => { lyrics.userScrollAt = Date.now(); }, { passive: true });
+// Кнопка текста жёстко привязана к «Синхронно»: открытие всегда начинается
+// с него (если синхронного текста нет, отрисовка сама покажет простой)
+function toggleLyricsSynced() {
+  if (!lyricsOpen()) setLyricsMode('synced');
+  toggleLyrics(!lyricsOpen());
+}
+btnLyrics.addEventListener('click', toggleLyricsSynced);
+$('ly-close').addEventListener('click', () => toggleLyrics(false));
+// Чипы переключают режим только на текущую сессию — ничего не сохраняется
+$('ly-mode-synced').addEventListener('click', () => setLyricsMode('synced'));
+$('ly-mode-plain').addEventListener('click', () => setLyricsMode('plain'));
+$('ly-mode-off').addEventListener('click', () => setLyricsMode('off'));
+
+// Кнопка на обложке главной: режим текста с выключенным текстом —
+// просто обложка по центру экрана
+$('card-fs').addEventListener('click', () => {
+  setLyricsMode('off');
+  toggleLyrics(true);
+});
+
+// Мини-управление на обложке: кнопки проксируют основные, состояния
+// (пауза, повтор, шафл) зеркалим, чтобы оверлей всегда был актуален
+const lyHpPlay = $('ly-hp-play');
+const lyHpRepeat = $('ly-hp-repeat');
+const lyHpShuffle = $('ly-hp-shuffle');
+$('ly-hp-prev').addEventListener('click', () => $('btn-prev').click());
+$('ly-hp-next').addEventListener('click', () => $('btn-next').click());
+lyHpPlay.addEventListener('click', () => btnPlayPause.click());
+lyHpRepeat.addEventListener('click', () => btnRepeat.click());
+lyHpShuffle.addEventListener('click', () => btnShuffle.click());
+
+function syncLyHover() {
+  lyHpPlay.textContent = audio.paused ? '▶' : '⏸';
+  lyHpPlay.setAttribute('aria-label', audio.paused ? 'Воспроизведение' : 'Пауза');
+  lyHpRepeat.classList.toggle('on', btnRepeat.classList.contains('on'));
+  // Повтор одного трека — вторая вариация значка (SVG с «1», класс .one)
+  lyHpRepeat.classList.toggle('one', state.repeat === 'one');
+  lyHpRepeat.title = btnRepeat.title;
+  lyHpShuffle.classList.toggle('on', btnShuffle.classList.contains('on'));
+}
+audio.addEventListener('play', syncLyHover);
+audio.addEventListener('pause', syncLyHover);
+// class ловит вкл/выкл, characterData+childList — смену ↻ на ↻1 у основной кнопки
+new MutationObserver(syncLyHover)
+  .observe(btnRepeat, { attributes: true, attributeFilter: ['class'], characterData: true, childList: true, subtree: true });
+new MutationObserver(syncLyHover)
+  .observe(btnShuffle, { attributes: true, attributeFilter: ['class'] });
+syncLyHover();
+
+// Громкость в режиме текста: кнопка = мьют основной, ползунок проксирует
+// основной (его обработчик input применяет и сохраняет громкость)
+$('ly-vol-btn').addEventListener('click', () => btnMute.click());
+$('ly-vol-bar').addEventListener('input', () => {
+  volumeBar.value = $('ly-vol-bar').value;
+  volumeBar.dispatchEvent(new Event('input'));
+});
+
 if ('mediaSession' in navigator) {
   navigator.mediaSession.setActionHandler('play', () => audio.play().catch(() => {}));
   navigator.mediaSession.setActionHandler('pause', () => audio.pause());
@@ -4014,8 +4545,15 @@ audio.addEventListener('timeupdate', () => {
 function applyVolume() {
   audio.volume = Number(volumeBar.value);
   const muted = audio.muted || audio.volume === 0;
-  btnMute.textContent = muted ? '🔇' : audio.volume < 0.5 ? '🔉' : '🔊';
+  // Значок громкости — трёхсостоятельный SVG, выбор через data-vol
+  const vol = muted ? 'mute' : audio.volume < 0.5 ? 'low' : 'high';
+  btnMute.dataset.vol = vol;
   btnMute.setAttribute('aria-label', audio.muted ? 'Включить звук' : 'Выключить звук');
+  // Зеркалим виджет громкости режима текста
+  const lvBar = $('ly-vol-bar');
+  if (lvBar && lvBar.value !== volumeBar.value) lvBar.value = volumeBar.value;
+  const lvBtn = $('ly-vol-btn');
+  if (lvBtn) lvBtn.dataset.vol = vol;
 }
 
 volumeBar.addEventListener('input', () => {
@@ -4121,6 +4659,8 @@ document.addEventListener('keydown', (e) => {
 
   if (e.key === 'Escape' && !eqPanel.classList.contains('hidden')) {
     toggleEqPanel(false);
+  } else if (e.key === 'Escape' && lyricsOpen()) {
+    toggleLyrics(false);
   } else if (e.code === 'Space') {
     e.preventDefault();
     togglePlay();
@@ -4138,6 +4678,9 @@ document.addEventListener('keydown', (e) => {
   } else if (e.ctrlKey && e.key.toLowerCase() === 'e') {
     e.preventDefault();
     toggleEqPanel(eqPanel.classList.contains('hidden'));
+  } else if (e.ctrlKey && e.code === 'KeyL') {
+    e.preventDefault();
+    toggleLyricsSynced();
   }
 });
 

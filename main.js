@@ -11,6 +11,7 @@ const updates = require('./updates');
 const discord = require('./discord-rpc');
 const songCache = require('./song-cache');
 const feedback = require('./feedback');
+const lyrics = require('./lyrics');
 
 const IS_DEV = !app.isPackaged;
 
@@ -52,6 +53,7 @@ app.commandLine.appendSwitch('disk-cache-size', String(64 * 1024 * 1024));
 // как у плеера на vk.ru, и раздаём CORS для hls.js.
 const VK_CDN_FILTERS = [
   '*://*.vkuseraudio.net/*',
+  '*://*.vkuseraudio.ru/*',
   '*://*.userapi.com/*',
   '*://*.vkuser.net/*',
   '*://*.okcdn.ru/*',
@@ -198,6 +200,7 @@ app.whenReady().then(() => {
   setupVkCdnHeaders();
   localMusic.init(app.getPath('userData'));
   library.init(app.getPath('userData'));
+  lyrics.init(app.getPath('userData'));
   songCache.init(app.getPath('userData')).catch(() => {});
   trimNetCacheOnStart().catch(() => {});
   createWindow();
@@ -356,6 +359,15 @@ ipcMain.handle('audio:cacheStore', async (e, arg) => {
   }
 });
 
+ipcMain.handle('audio:cacheDrop', (e, arg) => {
+  try {
+    songCache.drop(String((arg && arg.id) || ''));
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
 // Настройки кэша: лимит, ручная очистка, занятое место
 ipcMain.handle('cache:limit', (e, arg) => {
   try {
@@ -396,6 +408,21 @@ ipcMain.handle('cache:netStats', () => {
 ipcMain.handle('cache:stats', () => {
   try {
     return { success: true, data: songCache.stats() };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+// ---------------------------------------------------------------- Тексты песен
+
+ipcMain.handle('lyrics:get', async (e, arg) => {
+  try {
+    const track = {
+      artist: String((arg && arg.artist) || '').slice(0, 200),
+      title: String((arg && arg.title) || '').slice(0, 200),
+      duration: Number((arg && arg.duration) || 0)
+    };
+    return { success: true, data: await lyrics.get(track) };
   } catch (err) {
     return { success: false, error: err.message };
   }

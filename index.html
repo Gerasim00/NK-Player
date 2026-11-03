@@ -301,7 +301,21 @@
     .header-text { flex: 1; min-width: 0; }
     .header-kind { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .1em; font-weight: 700; }
     #view-title { margin: 4px 0; font-size: 26px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* Без nowrap подпись и тип переносились на 3-4 строки и вылезали
+       поверх кнопок на узком окне */
+    .header-kind, #view-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #view-sub { color: var(--muted); font-size: 13px; }
+    /* Узкое окно: компактная шапка списка — меньше обложка, заголовок,
+       фильтр; у ghost-кнопок остаются только значки (подписи в <span>),
+       текстовый блок получает больше места */
+    @media (max-width: 1000px) {
+      .main-header { gap: 12px; padding: 16px 16px 12px; }
+      #view-cover { width: 64px; height: 64px; font-size: 26px; border-radius: 10px; }
+      #view-title { font-size: 20px; margin: 2px 0; }
+      .header-actions .input { width: 120px; }
+      .header-actions .btn-ghost { padding: 8px 11px; }
+      .header-actions .btn-ghost span { display: none; }
+    }
     .header-actions { display: flex; gap: 8px; align-items: center; }
     .header-actions .input { width: 200px; }
     .btn-round {
@@ -388,7 +402,9 @@
       background: #070a16f2;
       border-top: 1px solid #121c38;
       display: grid;
-      grid-template-columns: minmax(200px, 1fr) minmax(340px, 2fr) minmax(200px, 1fr);
+      /* Правая колонка — по ширине её содержимого (4 кнопки + узкий
+         ползунок громкости): иначе кнопки flex'ом скукоживались */
+      grid-template-columns: minmax(180px, 1fr) minmax(340px, 2fr) minmax(251px, 1fr);
       align-items: center;
       gap: 20px;
       padding: 0 20px;
@@ -432,11 +448,14 @@
     }
     #btn-play-pause:hover { transform: scale(1.06); }
     .progress { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-    .progress span { width: 40px; }
+    .progress span { width: 40px; flex: none; }
     .progress span:first-child { text-align: right; }
     input[type="range"] { flex: 1; accent-color: var(--accent); cursor: pointer; height: 4px; }
     .right { display: flex; justify-content: flex-end; align-items: center; gap: 6px; }
-    #volume-bar { flex: none; width: 100px; }
+    /* Кнопки не сжимаются — усадку на узком окне берёт на себя ползунок
+       громкости (он сжимается изящно, в отличие от иконок) */
+    .right > button { flex: none; }
+    #volume-bar { flex: 0 1 auto; width: 100px; min-width: 56px; }
     .eq-toggle {
       height: 30px; padding: 0 10px; border-radius: 8px;
       font-size: 12px; font-weight: 700; letter-spacing: .04em;
@@ -667,6 +686,15 @@
     }
     .ly-hp-l { position: absolute; left: 14px; }
     .ly-hp-r { position: absolute; right: 14px; }
+    /* Узкая обложка (маленькое окно): пять кнопок в один ряд не влезают
+       и наезжают друг на друга — повтор и шафл уезжают в нижние углы,
+       кнопки чуть уменьшаются. Класс .compact ставит ResizeObserver */
+    .ly-cover-wrap.compact .ly-hover { gap: 6px; }
+    .ly-cover-wrap.compact .ly-hp { width: 38px; height: 38px; font-size: 15px; }
+    .ly-cover-wrap.compact .ly-hp svg { width: 15px; height: 15px; }
+    .ly-cover-wrap.compact .ly-hp-play { width: 50px; height: 50px; font-size: 17px; }
+    .ly-cover-wrap.compact .ly-hp-l { left: 10px; bottom: 10px; }
+    .ly-cover-wrap.compact .ly-hp-r { right: 10px; bottom: 10px; }
     .ly-meta { text-align: center; min-width: 0; max-width: 100%; }
     #ly-title, #ly-artist { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #ly-title { font-size: 18px; font-weight: 700; }
@@ -1164,7 +1192,7 @@
        auto-отступы сцены «съедали» половину отступа, и сдвиг был незаметен */
     #home-view.preset-card .card-meta {
       margin-bottom: 8px;
-      transform: translateY(clamp(-170px, -19vh, -70px));
+      transform: translateY(clamp(-120px, -13vh, -50px));
     }
     /* Режим «одна строка»: АВТОР — Название */
     #home-view.preset-card .card-meta.meta-one,
@@ -1206,13 +1234,19 @@
       margin-top: auto;
       /* Капсулу поднимаем над котом на ту же высоту, что в «Карточке» над
          обложкой. Базовая позиция тут и так высокая (auto-отступ), поэтому
-         сдвиг заметно меньше карточного −19vh, иначе капсула липнет к верху */
-      transform: translateY(clamp(-70px, -4.5vh, -28px));
+         сдвиг заметно меньше карточного −13vh, иначе капсула липнет к верху */
+      transform: translateY(clamp(-48px, -3vh, -18px));
     }
     #home-view.preset-stylized .card-bar { margin-top: auto; }
     /* Кот делит высоту с подписями и управлением под ним — ужимаем сцену,
        иначе на невысоком окне управление уезжает за край */
     #home-view.preset-stylized .home-cat { width: min(44vh, 430px); }
+
+    /* Блоки композиции не сжимаются flex'ом: на низком окне сцену целиком
+       уменьшает fitHomeScale (zoom), а flex-shrink иначе скукоживал капсулу
+       (самый мягкий блок) — текст обрезался через overflow: hidden */
+    #home-view .card-meta, #home-view .card-cover-wrap, #home-view .home-cat,
+    #home-view .card-bar, #home-view .card-controls { flex: none; }
 
     /* Тень под подписями: плоское кольцо спектра проходит прямо за ними */
     .card-meta { text-align: center; min-width: 0; max-width: 100%; text-shadow: 0 2px 12px #000c; }
@@ -1763,9 +1797,9 @@
         </div>
         <div class="header-actions">
           <input id="filter-input" class="input" type="search" placeholder="Фильтр в списке" aria-label="Фильтр по текущему списку" autocomplete="off">
-          <button id="btn-import" class="btn-ghost hidden" title="Добавить свои файлы">＋ Добавить</button>
-          <button id="btn-del-playlist" class="btn-ghost hidden" title="Удалить этот плейлист">Удалить плейлист</button>
-          <button id="btn-shuffle-play" class="btn-ghost" title="Перемешать и слушать">⤮ Перемешать</button>
+          <button id="btn-import" class="btn-ghost hidden" title="Добавить свои файлы">＋ <span>Добавить</span></button>
+          <button id="btn-del-playlist" class="btn-ghost hidden" title="Удалить этот плейлист">✕ <span>Удалить плейлист</span></button>
+          <button id="btn-shuffle-play" class="btn-ghost" title="Перемешать и слушать">⤮ <span>Перемешать</span></button>
           <button id="btn-play-view" class="btn-round" title="Слушать" aria-label="Слушать список">▶</button>
         </div>
       </header>

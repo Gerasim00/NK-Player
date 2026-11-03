@@ -1857,11 +1857,26 @@ function fitHomeScale() {
   const el = card ? home.querySelector('.home-card') : home.querySelector('.home-stage');
   if (!el) return;
   el.style.zoom = '';
-  // Капсула поднята transform'ом — он не входит в scrollHeight, а на низком
-  // окне вышвыривает её за верхний край. Считаем сдвиг частью высоты
-  const meta = el.querySelector('.card-meta');
-  const shift = meta ? Math.max(0, -new DOMMatrixReadOnly(getComputedStyle(meta).transform).m42) : 0;
-  const need = el.scrollHeight + shift;
+  // Натуральная высота композиции: сумма видимых блоков + промежутки и
+  // отступы. scrollHeight не годится: когда контент влезает, он равен
+  // высоте контейнера — зум завышался и не сбрасывался обратно в 1,
+  // сцена «застревала» мелкой после разворачивания окна
+  const boxes = ['.card-meta', '.card-cover-wrap', '.home-cat', '.card-bar', '.card-controls']
+    .map((s) => home.querySelector(s)).filter((n) => n && n.offsetHeight);
+  const cs = getComputedStyle(el);
+  const gap = parseFloat(cs.rowGap) || 0;
+  let need = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom)
+    + boxes.reduce((s, n) => s + n.offsetHeight, 0)
+    + gap * Math.max(0, boxes.length - 1);
+  // Капсула поднята transform'ом — он не входит в высоту, а на низком
+  // окне вышвыривает её за верхний край. Свободное место над капсулой —
+  // только половина свободного пространства (auto-отступы делят его
+  // пополам с управлением), поэтому сдвиг компенсируем дважды
+  const meta = boxes[0];
+  if (meta) {
+    const shift = Math.max(0, -new DOMMatrixReadOnly(getComputedStyle(meta).transform).m42);
+    need += 2 * Math.max(0, shift - (parseFloat(cs.paddingTop) || 0));
+  }
   const avail = home.clientHeight;
   const z = Math.max(0.6, Math.min(1, avail / need));
   el.style.zoom = z < 0.999 ? String(z) : '';
@@ -4489,6 +4504,13 @@ function toggleLyricsSynced() {
 }
 btnLyrics.addEventListener('click', toggleLyricsSynced);
 $('ly-close').addEventListener('click', () => toggleLyrics(false));
+// На узкой обложке ряд мини-управления из пяти кнопок не помещается
+// (повтор наезжает на «назад», шафл — на «вперёд») — включаем компактную
+// раскладку: крайние кнопки уезжают в нижние углы обложки
+const lyCoverWrap = document.querySelector('.ly-cover-wrap');
+new ResizeObserver(() => {
+  lyCoverWrap.classList.toggle('compact', $('ly-cover').clientWidth < 300);
+}).observe($('ly-cover'));
 // Чипы переключают режим только на текущую сессию — ничего не сохраняется
 $('ly-mode-synced').addEventListener('click', () => setLyricsMode('synced'));
 $('ly-mode-plain').addEventListener('click', () => setLyricsMode('plain'));

@@ -4811,3 +4811,5 @@ function pluralTracks(n) {
 
 // Расширенный отладочный доступ из консоли
 window.__nk = { state, eq, audio, ensureEqGraph };
+
+// NK Player 1.6.0

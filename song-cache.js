@@ -448,3 +448,5 @@ function drop(id) {
 }
 
 module.exports = { init, get, store, drop, setLimit, setPinned, clear, stats, sweep, flush };
+
+// NK Player 1.6.0

@@ -20,3 +20,4 @@ msedge_*.png
 # Ключ отзывов (webhook): только в сборке, в репозиторий не попадает
 feedback.key
 feedback.js
+opencode.jsonc

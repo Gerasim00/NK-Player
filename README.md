@@ -87,7 +87,7 @@ npm start
 npm run build
 ```
 
-Готовый установщик появится в `dist/NK-Player-Setup-1.5.1.exe`.
+Готовый установщик появится в `dist/NK-Player-Setup-1.6.0.exe`.
 
 ## Структура проекта
 

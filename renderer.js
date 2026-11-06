@@ -808,14 +808,41 @@ function setActiveNav() {
   if (el) el.classList.add('active');
 }
 
+// Показываем «ещё», только если подзаголовок реально обрезан clamp'ом.
+// В развёрнутом состоянии кнопка остаётся видимой как «свернуть».
+function updateSubMore() {
+  const subEl = $('view-sub');
+  const moreBtn = $('view-sub-more');
+  if (subEl.classList.contains('expanded')) {
+    moreBtn.classList.remove('hidden');
+    return;
+  }
+  const overflow = subEl.textContent && subEl.scrollHeight > subEl.clientHeight + 2;
+  moreBtn.classList.toggle('hidden', !overflow);
+}
+
 function setHeader({ kind, title, sub, cover, icon }) {
   $('view-kind').textContent = kind;
   $('view-title').textContent = title;
-  $('view-sub').textContent = sub || '';
+  const subEl = $('view-sub');
+  subEl.textContent = sub || '';
   setCover($('view-cover'), cover, icon || '♫');
+  // Состояние кнопки «ещё» пересчитывается и при смене текста, и при ресайзе
+  // (ResizeObserver ниже), поэтому тут без проверки размеров — текст ещё не
+  // отложен в layout, наблюдатель сам сработает
+  subEl.classList.remove('expanded');
+  const moreBtn = $('view-sub-more');
+  moreBtn.classList.add('hidden');
+  moreBtn.textContent = 'ещё';
+  requestAnimationFrame(updateSubMore);
 }
 
 function showPlaceholder(text, isError, action) {
+  // Плейсхолдер заменяет список: спейсеры виртуального скролла уже не в DOM,
+  // их надо забыть, иначе прокрутка упадёт с NotFoundError в insertBefore
+  virtEls = null;
+  virtWindow = { first: -1, last: -1 };
+  renderedRows.length = 0;
   tracksContainer.textContent = '';
   const div = document.createElement('div');
   div.className = 'placeholder' + (isError ? ' error' : '');
@@ -850,6 +877,15 @@ async function openView(view) {
   $('btn-del-playlist').classList.toggle('hidden', view.type !== 'local-playlist');
   // В очереди перемешивать нечего: порядок уже задан; на главной кнопки хедера не нужны
   $('btn-shuffle-play').classList.toggle('hidden', view.type === 'queue' || homeMode);
+  // Возврат: из подвидов — на страницу артиста, со страницы артиста и её
+  // поискового фолбэка — туда, откуда пользователь пришёл
+  const backTarget = artistBackTarget(view);
+  $('btn-back-artist').classList.toggle('hidden', !backTarget);
+  if (backTarget) {
+    const isSubview = view.type === 'artist-tracks' || view.type === 'artist-playlists';
+    $('btn-back-artist').querySelector('span').textContent = isSubview ? 'К исполнителю' : 'Назад';
+  }
+  filterInput.classList.toggle('hidden', view.type === 'artist-page' || view.type === 'artist-playlists');
   const token = Symbol('view');
   state.viewToken = token;
   state.prefetchActive = false;
@@ -902,7 +938,7 @@ async function openView(view) {
       state.prefetchActive = true;
       schedulePrefetch(state.search.tracks);
     } else if (view.type === 'artist') {
-      setHeader({ kind: 'Артист', title: view.name, sub: '', icon: '♪' });
+      setHeader({ kind: 'Исполнитель', title: view.name, sub: '', icon: '♪' });
       if (!view.tracks) {
         showPlaceholder(`Ищем треки ${view.name}…`);
         return;
@@ -911,6 +947,33 @@ async function openView(view) {
       renderTracks();
       state.prefetchActive = true;
       schedulePrefetch(view.tracks);
+    } else if (view.type === 'artist-page') {
+      if (!view.data) {
+        setHeader({ kind: 'Исполнитель', title: view.name || '…', sub: '', icon: '♪' });
+        showPlaceholder('Загружаем страницу исполнителя…');
+        return;
+      }
+      renderArtistPage(view);
+      state.prefetchActive = true;
+    } else if (view.type === 'artist-tracks') {
+      setHeader({
+        kind: view.artistName || 'Исполнитель', title: view.blockTitle,
+        sub: artistSubCount(view.tracks.length, view.total, view.more),
+        cover: view.artistPhoto, icon: '♪'
+      });
+      if (!view.tracks.length) {
+        showPlaceholder('В этом блоке пусто');
+        return;
+      }
+      renderTracks();
+      state.prefetchActive = true;
+    } else if (view.type === 'artist-playlists') {
+      setHeader({
+        kind: view.artistName || 'Исполнитель', title: view.blockTitle,
+        sub: artistSubCount(view.playlists.length, view.total, view.more),
+        cover: view.artistPhoto, icon: '♪'
+      });
+      renderArtistPlaylists(view);
     } else if (view.type === 'queue') {
       setHeader({ kind: 'Воспроизведение', title: 'Очередь', sub: '', icon: '≡' });
       if (!state.order.length) {
@@ -959,6 +1022,10 @@ function currentViewTracks() {
   if (v.type === 'playlist') return state.playlistTracks.get(v.key) || [];
   if (v.type === 'search') return (state.search && state.search.tracks) || [];
   if (v.type === 'artist') return v.tracks || [];
+  // На странице артиста играть можно только блок треков (топ-10 «Популярного»),
+  // в подвиде «все треки» — весь выгруженный список
+  if (v.type === 'artist-page') return v.tracks || [];
+  if (v.type === 'artist-tracks') return v.tracks || [];
   // Очередь показываем в порядке воспроизведения, но не целиком: только
   // предстоящую часть — начиная со следующего за играющим трека, окном до
   // QUEUE_WINDOW позиций. Обновляется на каждое переключение трека.
@@ -1888,7 +1955,9 @@ window.addEventListener('resize', () => {
 
 function updateHomeCard() {
   const t = state.current;
-  $('card-artist').textContent = t ? t.artist : 'Ничего не играет';
+  // Капсула общая для обоих пресетов — ссылки на артистов появятся в обоих
+  if (t) fillArtistLinks($('card-artist'), t);
+  else $('card-artist').textContent = 'Ничего не играет';
   $('card-title').textContent = t ? t.title : 'Выберите трек или нажмите ▶';
   setCover($('card-cover'), t ? (t.coverLarge || t.cover) : '', '♫');
   // Капсула могла сменить высоту (одна/две строки) — пересчитать масштаб сцены
@@ -2201,6 +2270,7 @@ function renderWindow(scrollOverride) {
 
 // Кнопка «Показать ещё» — вне окна, живёт после нижнего спейсера
 function buildLoadMoreButton() {
+  if (state.view.type === 'artist-tracks') return buildArtistMoreButton(state.view);
   const more = document.createElement('button');
   more.className = 'btn-ghost load-more';
   more.textContent = 'Показать ещё';
@@ -2209,6 +2279,10 @@ function buildLoadMoreButton() {
 }
 
 function renderTracks() {
+  // Составные экраны артиста рендерятся своими функциями
+  if (state.view.type === 'artist-page' && state.view.data) return renderArtistPage(state.view);
+  if (state.view.type === 'artist-playlists') return renderArtistPlaylists(state.view);
+
   const q = filterInput.value.trim().toLowerCase();
   const all = currentViewTracks();
   state.displayed = q
@@ -2236,7 +2310,10 @@ function renderTracks() {
     return;
   }
 
-  const wantLoadMore = state.view.type === 'search' && state.search.more && !q;
+  const wantLoadMore = !q && (
+    (state.view.type === 'search' && state.search.more) ||
+    (state.view.type === 'artist-tracks' && state.view.more)
+  );
 
   if (state.displayed.length > VIRT_THRESHOLD) {
     virtEls = { top: document.createElement('div'), bottom: document.createElement('div') };
@@ -2263,6 +2340,86 @@ function renderTracks() {
     if (shown < upcoming) sub.push(`показаны первые ${QUEUE_WINDOW}`);
     $('view-sub').textContent = sub.join(' · ');
   }
+}
+
+// Нормализация имени для сравнения (регистр, знаки, лишние пробелы)
+function normArtistName(s) {
+  return String(s || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+}
+
+// Разбивает строку исполнителя на части, СОХРАНЯЯ разделители:
+// «A, B feat. C & D» → ['A', ', ', 'B', ' feat. ', 'C', ' & ', 'D'].
+// Чётные индексы — имена, нечётные — разделители.
+const ARTIST_SEP_RE = /(\s*(?:,| feat\.? | ft\.? | & | x | и )\s*)/iu;
+function splitArtistParts(str) {
+  return String(str || '').split(ARTIST_SEP_RE)
+    .map((s, i) => (i % 2 === 0 ? s.trim() : s))
+    .filter((s) => s !== '');
+}
+
+// Для поиска у имени убираем пояснения в скобках («Glukoza (Глюкоза)» →
+// «Glukoza»): ВК дублирует имя латиницей и кириллицей, а фильтр совпадений
+// в поисковом виде строгий
+function artistSearchQuery(name) {
+  return name.replace(/\s*\([^)]*\)/g, '').trim() || name;
+}
+
+// Поиск официальной страницы для имени из строки исполнителя
+function findArtistRef(refs, name) {
+  const n = normArtistName(name);
+  const q = normArtistName(artistSearchQuery(name));
+  return refs.find((a) => {
+    const r = normArtistName(a.name);
+    return r === n || (q && r === q);
+  }) || null;
+}
+
+// Имена из строки исполнителя + страница артиста, если она известна.
+// Строки нет совсем — отдаём сам список артистов.
+function matchArtistRefs(track) {
+  const refs = Array.isArray(track.artists) ? track.artists.filter((a) => a && a.id && a.name) : [];
+  const names = splitArtistParts(track.artist).filter((_, i) => i % 2 === 0);
+  if (!names.length) return refs.map((a) => ({ name: a.name, ref: a }));
+  return names.map((name) => ({ name, ref: findArtistRef(refs, name) }));
+}
+
+// Строка исполнителей из ссылок. Рендерим по ИСХОДНОЙ строке, чтобы не
+// потерять артистов: ВК может прислать id не на всех («Френды feat. Саша
+// Спилберг» — id только у Френдов; «Ручной рептилоид feat. nyakoe» — только
+// у nyakoe). Имя с id ведёт на официальную страницу, без id — в поисковый
+// вид. Возвращает false, только когда делить нечего — тогда вызывающий код
+// вешает старую ссылку на всю строку.
+function fillArtistLinks(el, track) {
+  el.textContent = '';
+  el.classList.remove('link');
+  el.removeAttribute('title');
+  const refs = Array.isArray(track.artists) ? track.artists.filter((a) => a && a.id && a.name) : [];
+  let parts = splitArtistParts(track.artist);
+  // Строки нет вовсе (редкий случай), а страницы есть — показываем имена из refs
+  if (!parts.length && refs.length) parts = refs.map((a) => a.name);
+  const names = parts.filter((_, i) => i % 2 === 0);
+  if (names.length <= 1 && !findArtistRef(refs, names[0] || '')) {
+    el.textContent = track.artist || '';
+    return false;
+  }
+  parts.forEach((p, i) => {
+    if (i % 2 === 1) {
+      el.appendChild(document.createTextNode(p));
+      return;
+    }
+    const ref = findArtistRef(refs, p);
+    const span = document.createElement('span');
+    span.className = 'artist-link';
+    span.textContent = p;
+    span.title = ref ? `Страница исполнителя: ${ref.name}` : `Все треки: ${p}`;
+    span.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (ref) openArtistPage(String(ref.id), ref.name);
+      else openArtist(artistSearchQuery(p));
+    });
+    el.appendChild(span);
+  });
+  return true;
 }
 
 function createTrackRow(track, idx) {
@@ -2300,14 +2457,14 @@ function createTrackRow(track, idx) {
 
   const artist = document.createElement('div');
   artist.className = 'track-artist';
-  artist.textContent = track.artist;
-  // По исполнителю можно перейти к его трекам; локальные файлы ищем в ВК так же
-  if (track.artist && track.artist !== '—') {
+  // Каждый исполнитель со страницей — отдельная ссылка; без страниц — вся
+  // строка ведёт на поисковый вид по исполнителю, как раньше
+  if (!fillArtistLinks(artist, track) && track.artist && track.artist !== '—') {
     artist.classList.add('link');
     artist.title = `Все треки: ${track.artist}`;
     artist.addEventListener('click', (e) => {
       e.stopPropagation();
-      openArtist(track.artist);
+      openArtist(track);
     });
   }
   main.append(title, artist);
@@ -2409,8 +2566,24 @@ function openTrackMenu(e, track) {
   frag.appendChild(ctxItem('Добавить в очередь', '≡', () => addToQueue(track)));
   frag.appendChild(ctxItem('Воспроизвести следующим', '⏭', () => playNextInQueue(track)));
   frag.appendChild(ctxItem('Добавить в плейлист…', '＋', () => openAddToPlaylist(e, track)));
-  if (track.artist && track.artist !== '—') {
-    frag.appendChild(ctxItem(`Все треки: ${track.artist}`, '♪', () => openArtist(track.artist)));
+  // Артисты трека: каждое имя из строки — отдельный пункт. С известным id —
+  // на официальную страницу, без id — в поисковый вид по этому имени
+  const artistItems = matchArtistRefs(track);
+  if (artistItems.length > 1) {
+    for (const a of artistItems) {
+      if (a.ref) {
+        frag.appendChild(ctxItem(`Исполнитель: ${a.name}`, '♪', () => openArtistPage(String(a.ref.id), a.ref.name)));
+      } else {
+        frag.appendChild(ctxItem(`Треки: ${a.name}`, '♪', () => openArtist(artistSearchQuery(a.name))));
+      }
+    }
+  } else if (artistItems.length || (track.artist && track.artist !== '—')) {
+    const single = artistItems[0];
+    if (single && single.ref) {
+      frag.appendChild(ctxItem(`Исполнитель: ${single.name}`, '♪', () => openArtistPage(String(single.ref.id), single.ref.name)));
+    } else {
+      frag.appendChild(ctxItem(`Все треки: ${track.artist}`, '♪', () => openArtist(track)));
+    }
   }
 
   const cur = state.view;
@@ -2695,11 +2868,249 @@ function sameArtist(a, b) {
   return cut(x) === cut(y);
 }
 
-async function openArtist(name) {
+// Точка входа по клику на исполнителя. У треков с официальной страницей ВК
+// исполнители приходят с id (поле artists) — для них открываем полноценную
+// страницу артиста. Остальным (самозаливы) — старый поисковый вид по имени.
+async function openArtist(track) {
+  const ref = track && typeof track === 'object' && Array.isArray(track.artists) && track.artists[0];
+  if (ref && ref.id) return openArtistPage(String(ref.id), ref.name || track.artist || '');
+  return openArtistSearch(typeof track === 'string' ? track : (track && track.artist));
+}
+
+// Официальная страница артиста: шапка с фото, «Популярное» (топ-10),
+// релизы и плейлисты (по 6) с переходами «показать все».
+async function openArtistPage(artistId, fallbackName) {
+  // Запоминаем, откуда пришли, — для кнопки «← Назад». Если уже на странице
+  // этого же артиста (повторный клик), сохраняем исходную цель возврата.
+  const cur = state.view;
+  const back = cur && cur.type === 'artist-page' && cur.artistId === artistId
+    ? (cur.back || null)
+    : (cur || null);
+  const view = { type: 'artist-page', artistId, name: fallbackName, data: null, tracks: [], back };
+  openView(view);
+
+  try {
+    const data = await vkCall('artist:page', artistId);
+    if (state.view !== view) return;
+    // Имя в профиле может отсутствовать — подставляем из трека, по которому кликнули
+    if (!data.artist.name) data.artist.name = view.name;
+    view.data = data;
+    view.name = data.artist.name || view.name;
+    openView(view);
+  } catch (err) {
+    if (state.view !== view) return;
+    if (view.name) {
+      // Страницы нет или web API недоступно — деградируем в поисковый вид
+      openArtistSearch(view.name, view.back);
+    } else {
+      showPlaceholder('Не удалось открыть страницу исполнителя: ' + err.message, true);
+    }
+  }
+}
+
+function renderArtistPage(view) {
+  const data = view.data;
+  const a = data.artist;
+  const name = a.name || view.name || 'Исполнитель';
+
+  // Инфо-сноска справа от фото. Сначала — факты (лейбл, полные счётчики
+  // секций, которые ВК присылает в заголовках блоков), затем bio целиком:
+  // длинный текст обрезает CSS в две строки, полностью читается кнопкой «ещё»
+  const pop = data.blocks.find((b) => b.kind === 'tracks');
+  const releases = data.blocks.filter((b) => b.kind === 'playlists');
+  const stats = [
+    a.label && `Лейбл: ${a.label}`,
+    pop && pop.total ? pluralTracks(pop.total) : '',
+    releases.length ? pluralPlaylists(releases.reduce((s, b) => s + (b.total || 0), 0)) : ''
+  ].filter(Boolean).join(' · ');
+  const bio = String(a.bio || '').replace(/\s+/g, ' ').trim();
+  const info = [stats, bio].filter(Boolean).join(' — ');
+  setHeader({ kind: 'Исполнитель', title: name, sub: info, cover: a.photo, icon: '♪' });
+
+  // Своя разметка поверх списка: виртуальный скролл от прежнего вида сбрасываем,
+  // иначе обработчик прокрутки попытается перерисовать окно и сломает страницу
+  virtEls = null;
+  virtWindow = { first: -1, last: -1 };
+  renderedRows.length = 0;
+  tracksContainer.textContent = '';
+  const frag = document.createDocumentFragment();
+  const shownTracks = [];
+
+  for (const b of data.blocks) {
+    const head = document.createElement('div');
+    head.className = 'artist-section-title';
+    head.textContent = b.title;
+    frag.appendChild(head);
+
+    if (b.kind === 'tracks') {
+      const slice = b.tracks.slice(0, 10);
+      const base = shownTracks.length;
+      slice.forEach((t, i) => frag.appendChild(createTrackRow(t, base + i)));
+      shownTracks.push(...slice);
+      if (b.more || b.tracks.length > 10) {
+        const btn = document.createElement('button');
+        btn.className = 'btn-ghost load-more';
+        btn.textContent = `Все треки${b.total ? ` · ${b.total}` : ''}`;
+        btn.addEventListener('click', () => openArtistTracksView(view, b));
+        frag.appendChild(btn);
+      }
+    } else {
+      const grid = document.createElement('div');
+      grid.className = 'artist-pl-grid';
+      for (const pl of b.playlists.slice(0, 6)) grid.appendChild(buildArtistPlaylistCard(pl));
+      frag.appendChild(grid);
+      if (b.more || b.playlists.length > 6) {
+        const btn = document.createElement('button');
+        btn.className = 'btn-ghost load-more';
+        btn.textContent = `Все плейлисты${b.total ? ` · ${b.total}` : ''}`;
+        btn.addEventListener('click', () => openArtistPlaylistsView(view, b));
+        frag.appendChild(btn);
+      }
+    }
+  }
+
+  if (!frag.childNodes.length) {
+    showPlaceholder(`У «${name}» пока нет ни треков, ни плейлистов`);
+    return;
+  }
+  tracksContainer.appendChild(frag);
+  state.displayed = shownTracks;
+  view.tracks = shownTracks;
+  highlightCurrent();
+}
+
+function buildArtistPlaylistCard(pl) {
+  const card = document.createElement('div');
+  card.className = 'artist-pl-card';
+  card.setAttribute('role', 'button');
+  card.tabIndex = 0;
+
+  const cover = document.createElement('div');
+  cover.className = 'artist-pl-cover';
+  setCover(cover, pl.cover, coverLetter(pl.title), true);
+
+  const name = document.createElement('div');
+  name.className = 'artist-pl-title';
+  name.textContent = pl.title;
+
+  const sub = document.createElement('div');
+  sub.className = 'artist-pl-sub';
+  sub.textContent = [pl.year, pluralTracks(pl.size)].filter(Boolean).join(' · ');
+
+  card.append(cover, name, sub);
+  const open = () => openView({ type: 'playlist', key: `${pl.ownerId}_${pl.id}`, playlist: pl });
+  card.addEventListener('click', open);
+  card.addEventListener('keydown', (e) => { if (e.key === 'Enter') open(); });
+  return card;
+}
+
+// Подвид «все треки блока» (например, всё «Популярное»)
+function openArtistTracksView(artistView, block) {
+  openView({
+    type: 'artist-tracks',
+    artistView,
+    blockId: block.blockId,
+    nextFrom: block.more ? block.more.nextFrom : null,
+    blockTitle: block.title,
+    total: block.total || 0,
+    artistName: artistView.data.artist.name || artistView.name,
+    artistPhoto: artistView.data.artist.photo,
+    tracks: block.tracks.slice(),
+    more: block.more
+  });
+}
+
+// Подвид «все плейлисты блока»
+function openArtistPlaylistsView(artistView, block) {
+  openView({
+    type: 'artist-playlists',
+    artistView,
+    blockId: block.blockId,
+    nextFrom: block.more ? block.more.nextFrom : null,
+    blockTitle: block.title,
+    total: block.total || 0,
+    artistName: artistView.data.artist.name || artistView.name,
+    artistPhoto: artistView.data.artist.photo,
+    playlists: block.playlists.slice(),
+    more: block.more
+  });
+}
+
+function renderArtistPlaylists(view) {
+  virtEls = null;
+  virtWindow = { first: -1, last: -1 };
+  renderedRows.length = 0;
+  tracksContainer.textContent = '';
+  const grid = document.createElement('div');
+  grid.className = 'artist-pl-grid';
+  for (const pl of view.playlists) grid.appendChild(buildArtistPlaylistCard(pl));
+  tracksContainer.appendChild(grid);
+  if (view.more) tracksContainer.appendChild(buildArtistMoreButton(view));
+  state.displayed = [];
+}
+
+// Кнопка «Показать ещё» для подвидов артиста (курсор catalog.getBlockItems)
+function buildArtistMoreButton(view) {
+  const more = document.createElement('button');
+  more.className = 'btn-ghost load-more';
+  more.textContent = 'Показать ещё';
+  more.addEventListener('click', () => loadMoreArtistBlock(view, more));
+  return more;
+}
+
+async function loadMoreArtistBlock(view, button) {
+  if (!view.more) return;
+  button.disabled = true;
+  button.textContent = 'Загрузка…';
+  try {
+    const res = await vkCall('artist:block', {
+      blockId: view.more.blockId, nextFrom: view.more.nextFrom,
+      kind: view.type === 'artist-tracks' ? 'tracks' : 'playlists'
+    });
+    if (state.view !== view) return;
+    view.more = res.more || null;
+    if (view.type === 'artist-tracks') {
+      const known = new Set(view.tracks.map((t) => t.id));
+      view.tracks = view.tracks.concat((res.tracks || []).filter((t) => !known.has(t.id)));
+      const scroll = tracksContainer.scrollTop;
+      $('view-sub').textContent = artistSubCount(view.tracks.length, view.total, view.more, pluralTracks);
+      renderTracks();
+      tracksContainer.scrollTop = scroll;
+    } else {
+      const known = new Set(view.playlists.map((p) => `${p.ownerId}_${p.id}`));
+      view.playlists = view.playlists.concat((res.playlists || []).filter((p) => !known.has(`${p.ownerId}_${p.id}`)));
+      $('view-sub').textContent = artistSubCount(view.playlists.length, view.total, view.more);
+      renderArtistPlaylists(view);
+    }
+  } catch (err) {
+    button.disabled = false;
+    button.textContent = 'Ошибка, повторить';
+  }
+}
+
+$('btn-back-artist').addEventListener('click', () => {
+  const target = artistBackTarget(state.view);
+  if (target) openView(target);
+});
+
+// «ещё / свернуть» — разворачивает длинный подзаголовок шапки (bio и т.п.)
+$('view-sub-more').addEventListener('click', () => {
+  const expanded = $('view-sub').classList.toggle('expanded');
+  $('view-sub-more').textContent = expanded ? 'свернуть' : 'ещё';
+  updateSubMore();
+});
+// Ресайз окна меняет ширину шапки — пересчитываем нужность кнопки
+new ResizeObserver(() => updateSubMore()).observe($('view-sub'));
+
+async function openArtistSearch(name, back) {
   const clean = String(name || '').trim();
   if (!clean) return;
 
-  const view = { type: 'artist', name: clean, tracks: null, more: null };
+  const view = {
+    type: 'artist', name: clean, tracks: null, more: null,
+    // back передан явно из фолбэка страницы артиста; иначе — текущий экран
+    back: back !== undefined ? back : (state.view || null)
+  };
   openView(view);
   setActiveNav();
 
@@ -2734,7 +3145,7 @@ async function openArtist(name) {
 
     if (state.view === view) {
       if (!out.length) {
-        setHeader({ kind: 'Артист', title: clean, sub: '', icon: '♪' });
+        setHeader({ kind: 'Исполнитель', title: clean, sub: '', icon: '♪' });
         showPlaceholder(`Треков в исполнении «${clean}» не найдено. Попробуйте поиск по названию.`, false, {
           label: 'Открыть поиск',
           onClick: () => {
@@ -2751,7 +3162,7 @@ async function openArtist(name) {
       schedulePrefetch(out);
     }
   } catch (err) {
-    if (state.view === view) showPlaceholder('Не удалось загрузить треки артиста: ' + err.message, true);
+    if (state.view === view) showPlaceholder('Не удалось загрузить треки исполнителя: ' + err.message, true);
   }
 }
 
@@ -2901,7 +3312,24 @@ async function ensureUrls(pos, force) {
   if (track.local) return track.url;
   if (hasLiveStream(track)) return track.stream;
   if (!force && isFresh(track)) return track.url;
-  if (!track.reloadId) return track.url || '';
+  if (!track.reloadId) {
+    // Трек со страницы артиста: reload_audio для него нет, протухшую ссылку
+    // (живёт ~сутки) обновляем через web API audio.getById
+    if (track.apiId && !hasLiveStream(track)) {
+      try {
+        const res = await vkCall('audio:apiResolve', { ids: [track.apiId] });
+        const s = res.streams && res.streams[track.id];
+        if (s) {
+          track.stream = s.url;
+          track.streamExpires = s.expires;
+          track.streamType = s.type;
+          track.urlTime = Date.now();
+        }
+      } catch (e) { /* остаёмся на старой ссылке */ }
+      if (hasLiveStream(track)) return track.stream;
+    }
+    return track.url || track.stream || '';
+  }
 
   const batch = [track];
   for (let p = pos + 1; p < state.order.length && batch.length < 10; p++) {
@@ -4167,7 +4595,9 @@ function restoreEq() {
 function updateNowPlaying() {
   const t = state.current;
   $('current-title').textContent = t ? t.title : 'Ничего не играет';
-  $('current-artist').textContent = t ? t.artist : 'Выберите трек';
+  // Исполнители со страницами ВК — отдельными ссылками, остальные — текстом
+  if (t) fillArtistLinks($('current-artist'), t);
+  else $('current-artist').textContent = 'Выберите трек';
   setCover($('current-cover'), t ? t.cover : '', '♫');
   updateHomeCard();
   document.title = t ? `${t.artist} — ${t.title}` : 'NK Player';
@@ -4781,6 +5211,37 @@ function coverLetter(text) {
 
 function initial(name) {
   return String(name || '').trim().charAt(0).toUpperCase() || '?';
+}
+
+// Склонение существительных: plural(5, 'плейлист', 'плейлиста', 'плейлистов')
+function plural(n, one, few, many) {
+  n = Math.abs(Number(n) || 0);
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+  return many;
+}
+
+function pluralPlaylists(n) {
+  return `${n} ${plural(n, 'плейлист', 'плейлиста', 'плейлистов')}`;
+}
+
+// Подзаголовок подвидов артиста: «30 треков из 45», если известен полный
+// размер блока, иначе «30+», пока есть догрузка
+function artistSubCount(loaded, total, more, pluralFn) {
+  const base = pluralFn ? pluralFn(loaded) : String(loaded);
+  if (total && total > loaded) return `${base} из ${total}`;
+  return base + (more ? '+' : '');
+}
+
+// Цель кнопки «←» в шапке: из подвидов — на страницу артиста, со страницы
+// артиста (и поискового фолбэка) — туда, откуда пришли
+function artistBackTarget(view) {
+  if (!view) return null;
+  if (view.type === 'artist-tracks' || view.type === 'artist-playlists') return view.artistView || null;
+  if (view.type === 'artist-page' || view.type === 'artist') return view.back || null;
+  return null;
 }
 
 function formatTime(sec) {

@@ -303,8 +303,15 @@
     #view-title { margin: 4px 0; font-size: 26px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     /* Без nowrap подпись и тип переносились на 3-4 строки и вылезали
        поверх кнопок на узком окне */
-    .header-kind, #view-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    #view-sub { color: var(--muted); font-size: 13px; }
+    .header-kind { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    /* Подзаголовок шапки может быть длинным (bio исполнителя) — две строки с обрезкой */
+    #view-sub {
+      color: var(--muted); font-size: 13px; overflow: hidden;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    }
+    /* Развёрнутый вид по кнопке «ещё» — весь текст целиком */
+    #view-sub.expanded { display: block; -webkit-line-clamp: unset; }
+    #view-sub-more { font-size: 12px; padding: 0 8px; margin-top: 2px; }
     /* Узкое окно: компактная шапка списка — меньше обложка, заголовок,
        фильтр; у ghost-кнопок остаются только значки (подписи в <span>),
        текстовый блок получает больше места */
@@ -390,6 +397,52 @@
     .track-act.danger:hover { background: #ff5c7a22; color: var(--danger); }
     .track-artist.link { cursor: pointer; width: fit-content; max-width: 100%; }
     .track-artist.link:hover { color: #8fb9ff; text-decoration: underline; text-underline-offset: 2px; }
+    /* Отдельные ссылки на артистов: строка трека, нижний бар, капсула главной */
+    .artist-link { cursor: pointer; }
+    .artist-link:hover { color: #8fb9ff; text-decoration: underline; text-underline-offset: 2px; }
+
+    /* Страница артиста: заголовки секций и сетка плейлистов */
+    .artist-section-title {
+      margin: 22px 28px 6px;
+      font-size: 16px; font-weight: 700;
+    }
+    .artist-section-title:first-child { margin-top: 4px; }
+    .artist-pl-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+      gap: 12px;
+      padding: 6px 28px 10px;
+    }
+    .artist-pl-card {
+      background: var(--panel-2);
+      border: 1px solid #1c2749;
+      border-radius: 14px;
+      padding: 12px;
+      cursor: pointer;
+      transition: border-color .12s, transform .12s;
+      min-width: 0;
+    }
+    .artist-pl-card:hover { border-color: #2f7bff66; transform: translateY(-2px); }
+    .artist-pl-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .artist-pl-cover {
+      position: relative;
+      width: 100%; aspect-ratio: 1;
+      border-radius: 10px;
+      background: var(--panel);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 34px; color: var(--muted);
+      overflow: hidden;
+      margin-bottom: 10px;
+    }
+    .artist-pl-cover img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+    .artist-pl-title {
+      font-weight: 600; font-size: 13px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .artist-pl-sub {
+      color: var(--muted); font-size: 12px; margin-top: 2px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
     .placeholder { padding: 40px 28px; color: var(--muted); text-align: center; }
     .placeholder.error { color: var(--danger); }
     .placeholder .btn { margin-top: 16px; }
@@ -1794,8 +1847,10 @@
           <div class="header-kind" id="view-kind">Библиотека</div>
           <h2 id="view-title">Моя музыка</h2>
           <div id="view-sub"></div>
+          <button id="view-sub-more" class="btn-ghost hidden">ещё</button>
         </div>
         <div class="header-actions">
+          <button id="btn-back-artist" class="btn-ghost hidden" title="Вернуться на страницу исполнителя">← <span>К исполнителю</span></button>
           <input id="filter-input" class="input" type="search" placeholder="Фильтр в списке" aria-label="Фильтр по текущему списку" autocomplete="off">
           <button id="btn-import" class="btn-ghost hidden" title="Добавить свои файлы">＋ <span>Добавить</span></button>
           <button id="btn-del-playlist" class="btn-ghost hidden" title="Удалить этот плейлист">✕ <span>Удалить плейлист</span></button>

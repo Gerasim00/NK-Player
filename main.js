@@ -217,6 +217,7 @@ app.on('window-all-closed', () => {
 app.on('will-quit', () => {
   discord.shutdown();
   songCache.flush();
+  dropVkApiWindow();
 });
 
 // ---------------------------------------------------------------- Окно
@@ -268,6 +269,7 @@ function closeAuthView() {
 ipcMain.handle('auth:logout', async () => {
   closeAuthView();
   vk.resetSession();
+  dropVkApiWindow();
   await session.defaultSession.clearStorageData();
   return { success: true };
 });
@@ -320,6 +322,97 @@ vkHandler('playlists:get', (ses) => vk.getPlaylists(ses));
 vkHandler('playlist:tracks', (ses, pl) => vk.getPlaylistTracks(ses, pl));
 vkHandler('audio:search', (ses, q) => vk.search(ses, String(q || '').slice(0, 200)));
 vkHandler('audio:searchMore', (ses, more) => vk.searchMore(ses, more));
+
+// ---------------------------------------------------------------- ВК Web API
+
+// Страницы артистов vk.ru отдаёт не через al_audio.php, а через
+// web.api.vk.ru с web-токеном (vk1.a...). Токен выпускает login.vk.ru и
+// только при куках в браузерном контексте (credentials: 'include'), поэтому
+// запросы выполняются внутри скрытого окна с vk.ru — ровно как SPA музыки.
+let vkApiWin = null;
+let vkApiWinLoading = null;
+let webToken = { token: '', expires: 0 };
+
+async function ensureVkApiWindow() {
+  if (vkApiWin && !vkApiWin.isDestroyed() && /^https:\/\/vk\.ru\//.test(vkApiWin.webContents.getURL())) {
+    return vkApiWin;
+  }
+  if (!vkApiWinLoading) {
+    vkApiWinLoading = (async () => {
+      const win = new BrowserWindow({
+        show: false,
+        webPreferences: { nodeIntegration: false, contextIsolation: true }
+      });
+      win.webContents.setAudioMuted(true);
+      // vk.ru/audio уводит на login.vk.ru, если куки сессии ещё не видны окну
+      // (например, профиль был занят прошлым экземпляром) — пробуем дважды
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          await win.loadURL('https://vk.ru/audio');
+        } catch (e) { /* редиректы/сеть — проверим адрес */ }
+        if (/^https:\/\/vk\.ru\//.test(win.webContents.getURL())) break;
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+      return win;
+    })();
+  }
+  const win = await vkApiWinLoading;
+  vkApiWinLoading = null;
+  vkApiWin = win;
+  return win;
+}
+
+function dropVkApiWindow() {
+  webToken = { token: '', expires: 0 };
+  if (vkApiWin && !vkApiWin.isDestroyed()) vkApiWin.destroy();
+  vkApiWin = null;
+}
+
+async function vkWebApi(method, params) {
+  const win = await ensureVkApiWindow();
+  if (!/^https:\/\/vk\.ru\//.test(win.webContents.getURL())) {
+    throw new Error('Не удалось открыть фоновую страницу ВК');
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  if (!webToken.token || webToken.expires < now + 120) {
+    const t = await win.webContents.executeJavaScript(`fetch('https://login.vk.ru/?act=web_token', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'version=1&app_id=6287487'
+    }).then((r) => r.json()).catch((e) => ({ error: String(e) }))`);
+    const token = t && t.data && t.data.access_token;
+    if (!token) throw new Error('ВК не выдал web-токен. Проверьте авторизацию.');
+    webToken = { token, expires: Number(t.data.expires) || 0 };
+  }
+
+  const result = await win.webContents.executeJavaScript(`fetch(${JSON.stringify('https://web.api.vk.ru/method/' + method)}, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      ...${JSON.stringify(params || {})},
+      access_token: ${JSON.stringify(webToken.token)},
+      v: '5.289', client_id: '6287487', lang: 'ru'
+    }).toString()
+  }).then((r) => r.json()).catch((e) => ({ error: { error_msg: String(e) } }))`);
+  // error_code 5 — токен протух: сбрасываем, следующий вызов перевыпустит
+  if (result && result.error && Number(result.error.error_code) === 5) webToken.token = '';
+  return result;
+}
+
+vk.setWebApiCaller(vkWebApi);
+
+vkHandler('artist:page', (ses, id) => vk.getArtistPage(ses, String(id || '').slice(0, 64)));
+vkHandler('artist:block', (ses, arg) => vk.getArtistBlock({
+  blockId: String((arg && arg.blockId) || '').slice(0, 256),
+  nextFrom: String((arg && arg.nextFrom) || '').slice(0, 256),
+  kind: arg && arg.kind === 'tracks' ? 'tracks' : 'playlists'
+}));
+vkHandler('audio:apiResolve', (ses, arg) => {
+  const ids = (Array.isArray(arg) ? arg : (arg && arg.ids) || [])
+    .map((s) => String(s).slice(0, 128)).filter(Boolean).slice(0, 200);
+  return vk.resolveApiUrls(ids);
+});
 vkHandler('audio:resolve', (ses, arg) => {
   // Новый формат: { ids, background }; старый — просто массив id
   const req = Array.isArray(arg) ? { ids: arg } : (arg || {});

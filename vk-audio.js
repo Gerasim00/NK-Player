@@ -251,6 +251,18 @@ function largestCover(raw) {
   return best;
 }
 
+// Индексы 17 и 18 в массиве трека — основные и feat-исполнители с id
+// официальных страниц: [{ id: "7322...", name: "Miyagi" }]. По id открывается
+// страница артиста. У самозалитых треков списка нет.
+function parseArtists(list) {
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((a) => (a && typeof a === 'object' && a.id
+      ? { id: String(a.id), name: unescapeHtml(String(a.name || '')) }
+      : null))
+    .filter((a) => a && a.name);
+}
+
 // Трек в ответах ВК — массив: [id, owner_id, url, title, artist, duration, ..., hashes(13), covers(14), ...]
 function parseTrack(a, userId) {
   const h = String(a[13] || '').split('/');
@@ -267,7 +279,9 @@ function parseTrack(a, userId) {
     url: decodeVkAudioUrl(a[2], userId),
     stream: stream.url,
     streamExpires: stream.expires,
-    streamType: stream.type
+    streamType: stream.type,
+    // 17 — основные исполнители, 18 — приглашённые: помечаем feat для разделителя
+    artists: parseArtists(a[17]).concat(parseArtists(a[18]).map((x) => ({ ...x, feat: true })))
   };
 }
 
@@ -578,7 +592,218 @@ async function warmSegments(ses, items, { timeout = 45000, concurrency = 4, cap 
   return { warmed, details };
 }
 
+// ---------- Web API (web.api.vk.ru) ----------
+
+// Страницы артистов vk.ru грузит не через al_audio.php, а через web.api.vk.ru
+// с web-токеном (vk1.a...). Токен выдаёт login.vk.ru только при куках из
+// браузерного адресного контекста (credentials: 'include'), поэтому сами
+// запросы выполняет скрытое окно vk.ru (см. main.js) — сюда оно передано
+// как caller(method, params) -> сырой ответ API.
+let webApiCaller = null;
+function setWebApiCaller(fn) {
+  webApiCaller = fn;
+}
+
+async function webApi(method, params) {
+  if (!webApiCaller) throw new Error('Web API ВК сейчас недоступно');
+  const res = await webApiCaller(method, params);
+  if (res && res.error) {
+    const msg = res.error.error_msg || `Ошибка VK API ${res.error.error_code || ''}`.trim();
+    throw new Error(msg);
+  }
+  if (!res || res.response === undefined) throw new Error('Пустой ответ VK API');
+  return res.response;
+}
+
+// Трек web-API — объект (в отличие от массива al_audio). Ссылки на поток
+// приходят сразу и живут ~сутки (expires в параметрах) — reload_audio для них
+// не нужен вовсе.
+function apiUrlExpires(url) {
+  const m = String(url || '').match(/[?&]expires=(\d+)/);
+  return m ? Number(m[1]) : 0;
+}
+
+function parseApiTrack(t) {
+  if (!t || typeof t !== 'object') return null;
+  const id = `${t.owner_id}_${t.id}`;
+  let stream = '', streamType = '';
+  const streams = Array.isArray(t.audio_streams) ? t.audio_streams : [];
+  // mp3/aac играет <audio> напрямую, hls — через hls.js; dash не умеем
+  for (const pref of ['mp3', 'aac', 'hls_ts', 'hls']) {
+    const s = streams.find((x) => x && x.type === pref && typeof x.url === 'string' && x.url.startsWith('https://'));
+    if (s) { stream = s.url; streamType = s.type; break; }
+  }
+  const url = typeof t.url === 'string' && t.url.startsWith('https://') ? t.url : '';
+  if (!stream && url) stream = url;
+  const thumb = t.thumb || {};
+  const cover = normalizeCover(thumb.photo_68 || thumb.photo_135 || '');
+  return {
+    id,
+    apiId: t.access_key ? `${id}_${t.access_key}` : id,
+    reloadId: null,
+    title: String(t.title || ''),
+    artist: String(t.artist || ''),
+    duration: Number(t.duration) || 0,
+    cover,
+    coverLarge: normalizeCover(thumb.photo_600 || thumb.photo_270 || '') || cover,
+    url: '',
+    stream,
+    streamExpires: apiUrlExpires(stream),
+    streamType,
+    artists: (Array.isArray(t.main_artists) ? t.main_artists : [])
+      .map((a) => (a && a.id ? { id: String(a.id), name: String(a.name || '') } : null))
+      .filter(Boolean)
+      .concat((Array.isArray(t.feat_artists) ? t.feat_artists : [])
+        .map((a) => (a && a.id ? { id: String(a.id), name: String(a.name || ''), feat: true } : null))
+        .filter(Boolean))
+  };
+}
+
+function parseApiPlaylist(p) {
+  if (!p || typeof p !== 'object') return null;
+  const photo = p.photo || {};
+  const artists = Array.isArray(p.main_artists) ? p.main_artists.map((a) => a && a.name).filter(Boolean) : [];
+  return {
+    ownerId: Number(p.owner_id),
+    id: Number(p.id),
+    accessHash: String(p.access_key || ''),
+    originalOwnerId: null,
+    originalId: null,
+    title: String(p.title || ''),
+    author: artists.join(', '),
+    size: Number(p.count) || 0,
+    cover: normalizeCover(photo.photo_270 || photo.photo_135 || photo.photo_68 || ''),
+    year: Number(p.year) || 0
+  };
+}
+
+// Квадратная аватарка артиста: в catalog.getAudioArtist фото — широкий баннер,
+// а квадрат отдаёт старый act=search_artists из al_audio.
+async function searchArtistPhoto(ses, name, id) {
+  try {
+    const res = await alAudio(ses, { act: 'search_artists', al: 1, query: name });
+    const artists = res?.payload?.[1]?.[0]?.artists;
+    if (!Array.isArray(artists)) return '';
+    const hit = artists.find((a) => String(a.id) === String(id)) || artists[0];
+    return hit ? normalizeCover(hit.image) : '';
+  } catch (e) {
+    return '';
+  }
+}
+
+// Страница артиста: профиль + блоки «Популярное», «Релизы», «Встречается в
+// плейлистах» и т.п. Блоки ссылаются на сущности по id, сами сущности лежат
+// в общих массивах audios/playlists ответа.
+async function getArtistPage(ses, artistId) {
+  const r = await webApi('catalog.getAudioArtist', { artist_id: String(artistId), need_blocks: '1' });
+  const info = (Array.isArray(r.artists) ? r.artists : [])[0] || {};
+
+  const audioMap = new Map();
+  for (const t of r.audios || []) {
+    const track = parseApiTrack(t);
+    if (track) audioMap.set(track.id, track);
+  }
+  const playlistMap = new Map();
+  for (const p of r.playlists || []) {
+    const pl = parseApiPlaylist(p);
+    if (pl) playlistMap.set(`${pl.ownerId}_${pl.id}`, pl);
+  }
+
+  const blocks = [];
+  // Заголовочные блоки (layout header) несут полное число элементов секции
+  // в actions[].ref_items_count — запоминаем по заголовку, чтобы показать
+  // «45 треков» и подписать кнопки «Все треки · 45» без полной выгрузки.
+  const totals = {};
+  for (const section of r.catalog?.sections || []) {
+    for (const b of section.blocks || []) {
+      if (!b || !b.title) continue;
+      if (b.data_type === 'none' && Array.isArray(b.actions)) {
+        const cnt = (b.actions.find((a) => a && a.ref_items_count) || {}).ref_items_count;
+        if (cnt && totals[b.title] === undefined) totals[b.title] = cnt;
+        continue;
+      }
+      if (b.data_type === 'music_audios') {
+        const tracks = (b.audios_ids || []).map((id) => audioMap.get(id)).filter(Boolean);
+        if (!tracks.length) continue;
+        blocks.push({
+          kind: 'tracks', title: String(b.title), blockId: b.id,
+          total: totals[b.title] || tracks.length,
+          more: b.next_from ? { blockId: b.id, nextFrom: b.next_from } : null,
+          tracks
+        });
+      } else if (b.data_type === 'music_playlists') {
+        const playlists = (b.playlists_ids || []).map((id) => playlistMap.get(id)).filter(Boolean);
+        if (!playlists.length) continue;
+        blocks.push({
+          kind: 'playlists', title: String(b.title), blockId: b.id,
+          total: totals[b.title] || playlists.length,
+          more: b.next_from ? { blockId: b.id, nextFrom: b.next_from } : null,
+          playlists
+        });
+      }
+    }
+  }
+
+  // Блок «Официальные страницы»: первая группа-ссылка — это лейбл артиста
+  const labelLink = (Array.isArray(r.links) ? r.links : [])
+    .find((l) => l && l.meta && l.meta.content_type === 'group' && l.title);
+
+  // Фото из ответа — баннер (например 1590x400); для аватарки берём квадрат
+  const banner = (Array.isArray(info.photo) ? info.photo : [])
+    .slice()
+    .sort((a, b) => (b.width || 0) - (a.width || 0))[0];
+  const avatar = await searchArtistPhoto(ses, info.name || '', info.id || artistId);
+
+  return {
+    artist: {
+      id: String(info.id || artistId),
+      name: String(info.name || ''),
+      bio: String(info.bio || ''),
+      isFollowed: !!info.is_followed,
+      label: labelLink ? String(labelLink.title) : '',
+      photo: avatar,
+      banner: banner ? normalizeCover(banner.url) : ''
+    },
+    blocks
+  };
+}
+
+// Догрузка блока («Показать все»): следующие треки/плейлисты по курсору.
+async function getArtistBlock({ blockId, nextFrom, kind }) {
+  const r = await webApi('catalog.getBlockItems', {
+    block_id: String(blockId), start_from: String(nextFrom || ''), count: '100'
+  });
+  const block = r.block || {};
+  const more = block.next_from ? { blockId: block.id || blockId, nextFrom: block.next_from } : null;
+  if (kind === 'tracks') {
+    return { tracks: (r.audios || []).map(parseApiTrack).filter(Boolean), more };
+  }
+  return { playlists: (r.playlists || []).map(parseApiPlaylist).filter(Boolean), more };
+}
+
+// Свежие ссылки для API-треков (у них нет reloadId): audio.getById отдаёт
+// тот же объект с новым url/audio_streams.
+async function resolveApiUrls(apiIds) {
+  const urls = {};
+  const streams = {};
+  for (let i = 0; i < apiIds.length; i += 100) {
+    const chunk = apiIds.slice(i, i + 100);
+    const list = await webApi('audio.getById', { audios: chunk.join(',') });
+    for (const t of Array.isArray(list) ? list : []) {
+      const p = parseApiTrack(t);
+      if (!p || !p.stream) continue;
+      urls[p.id] = p.stream;
+      streams[p.id] = { url: p.stream, expires: p.streamExpires, type: p.streamType };
+    }
+  }
+  return { urls, streams, rateLimited: false };
+}
+
 module.exports = {
+  setWebApiCaller,
+  getArtistPage,
+  getArtistBlock,
+  resolveApiUrls,
   getMyAudios,
   getPlaylists,
   getPlaylistTracks,

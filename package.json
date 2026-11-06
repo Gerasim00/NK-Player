@@ -1,7 +1,7 @@
 {
   "name": "nk-player",
   "productName": "NK Player",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "NK Player — музыкальный плеер для ВКонтакте",
   "author": {
     "name": "NK Player"
@@ -59,10 +59,19 @@
           "arch": [
             "x64"
           ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "assets/icon.ico",
       "artifactName": "NK-Player-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "NK-Player-Portable-${version}.${ext}"
     },
     "nsis": {
       "oneClick": false,

@@ -688,5 +688,3 @@ ipcMain.handle('discord:set-enabled', (e, on) => {
 });
 
 ipcMain.handle('discord:status', () => ({ success: true, data: discord.status() }));
-
-// NK Player 1.6.0

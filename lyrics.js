@@ -536,5 +536,3 @@ async function get(track) {
 }
 
 module.exports = { init, get };
-
-// NK Player 1.6.0

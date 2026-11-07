@@ -125,5 +125,3 @@ function tracks(id) {
 }
 
 module.exports = { init, list, get, create, rename, remove, addTrack, removeTrack, tracks };
-
-// NK Player 1.6.0

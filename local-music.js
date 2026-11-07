@@ -229,5 +229,3 @@ function setDuration(id, duration) {
 }
 
 module.exports = { init, list, importFiles, remove, setDuration };
-
-// NK Player 1.6.0

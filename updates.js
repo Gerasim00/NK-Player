@@ -93,5 +93,3 @@ async function check({ force = false } = {}) {
 }
 
 module.exports = { check, compare };
-
-// NK Player 1.6.0

@@ -815,3 +815,5 @@ module.exports = {
   getProfile,
   decodeVkAudioUrl
 };
+
+// NK Player 1.6.0

@@ -179,3 +179,5 @@ function status() {
 }
 
 module.exports = { start, stop, shutdown, update, setEnabled, status };
+
+// NK Player 1.6.0
